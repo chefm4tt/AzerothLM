@@ -19,6 +19,8 @@ World of Warcraft addons run in a sandboxed Lua environment with no direct inter
 *   **Dynamic Tab Naming**: Rename chat tabs to organize your theory-crafting or quest help sessions.
 *   **Terminal UI**: A clean, movable in-game window with a scrolling history, color-coded messages (Cyan for You, Green for AI), and status indicators.
 *   **Relay Dashboard**: A modern, real-time CLI dashboard for the Python relay script that shows connection status, current model, and request processing progress.
+*   **Smart Caching**: Responses are cached locally (`cache.json`) to reduce API usage and latency for repeated queries.
+*   **Rate Limiting & Backoff**: Built-in protection against API rate limits with exponential backoff and a global cooldown timer.
 
 ### Development & Mock Mode
 
@@ -63,6 +65,10 @@ World of Warcraft addons run in a sandboxed Lua environment with no direct inter
     *   Wait a few seconds for the external script to process the request.
     *   Click the **Sync** button in the terminal. This will reload your UI to fetch the response.
     *   The AI's reply will appear in the chat history.
+
+## Caching
+
+Cached responses are stored in `cache.json`. To clear the cache, simply delete this file.
 
 ## Development Note
 

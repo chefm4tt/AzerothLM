@@ -4,6 +4,9 @@ import sys
 import time
 import random
 import luadata
+import json
+import hashlib
+import functools
 from dotenv import load_dotenv
 from litellm import completion
 from filelock import FileLock, Timeout
@@ -27,6 +30,9 @@ if not PATH or "YOUR_ACCOUNT_NAME" in PATH:
 
 PATH = os.path.normpath(PATH)
 LOCK_PATH = PATH + ".lock"
+CACHE_FILE = "cache.json"
+COOLDOWN_TIMER = 10
+LAST_CALL_TIME = 0
 
 # -----------------------------------------------------------------------------
 # Lua Parser & Serializer
@@ -183,6 +189,54 @@ def decode_hex(s):
             return s
     return s
 
+def get_cache_key(model, query, context):
+    raw = f"{model}{query}{context}"
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_cache(key, response):
+    cache = load_cache()
+    cache[key] = response
+    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, indent=2)
+
+def retry_with_backoff(max_retries=3, base_delay=1):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if "429" in str(e) and retries < max_retries:
+                        retries += 1
+                        delay = base_delay * (2 ** (retries - 1))
+                        time.sleep(delay)
+                    else:
+                        raise e
+        return wrapper
+    return decorator
+
+@retry_with_backoff(max_retries=3)
+def _execute_completion(system_instruction, user_content):
+    response = completion(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_content}
+        ]
+    )
+    return response.choices[0].message.content or ""
+
 def mock_call_ai(user_query, game_context, chat_name):
     responses = [
         "Analyzing your gear... You should prioritize upgrading your weapon in Karazhan.",
@@ -194,9 +248,27 @@ def mock_call_ai(user_query, game_context, chat_name):
     time.sleep(2) # Simulate latency
     return random.choice(responses)
 
-def call_ai(user_query, game_context, chat_name):
+def call_ai(user_query, game_context, chat_name, live_console=None):
+    global LAST_CALL_TIME
+    
     if MOCK_MODE:
         return mock_call_ai(user_query, game_context, chat_name)
+
+    # Rate Limiting
+    elapsed = time.time() - LAST_CALL_TIME
+    if elapsed < COOLDOWN_TIMER:
+        time.sleep(COOLDOWN_TIMER - elapsed)
+
+    # Caching
+    cache_key = get_cache_key(MODEL_NAME, user_query, game_context)
+    cache = load_cache()
+    if cache_key in cache:
+        if live_console:
+            info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\n\n")
+            info_text.append(Text("Using Cached Response", style="cyan"))
+            live_console.update(get_dashboard(Panel(info_text, title="Cache Hit", border_style="cyan")))
+            time.sleep(1.5)
+        return cache[cache_key]
 
     # Universal system instruction for all models
     system_instruction = (
@@ -206,15 +278,13 @@ def call_ai(user_query, game_context, chat_name):
         "Format your responses using simple line breaks for compatibility with the WoW UI."
     )
 
+    user_content = f"The user is currently in a chat session titled '{chat_name}'. Prioritize information relevant to this topic while still considering their overall character data.\n\nContext: {game_context}\n\nQuestion: {user_query}"
+
     try:
-        response = completion(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": f"The user is currently in a chat session titled '{chat_name}'. Prioritize information relevant to this topic while still considering their overall character data.\n\nContext: {game_context}\n\nQuestion: {user_query}"}
-            ]
-        )
-        return response.choices[0].message.content or ""
+        response_content = _execute_completion(system_instruction, user_content)
+        LAST_CALL_TIME = time.time()
+        save_cache(cache_key, response_content)
+        return response_content
     except Exception as e:
         return f"API Error: {str(e)}"
 
@@ -350,7 +420,7 @@ with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
                             live.update(get_dashboard(Panel(info_text, title="Processing Request", border_style="yellow")))
 
                             # 3. Call AI
-                            ai_response = call_ai(user_query, context_str, chat_name)
+                            ai_response = call_ai(user_query, context_str, chat_name, live)
                             
                             # 4. Safety Buffer with Progress Bar
                             prog = Progress(
