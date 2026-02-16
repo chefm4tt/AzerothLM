@@ -33,6 +33,7 @@ LOCK_PATH = PATH + ".lock"
 CACHE_FILE = "cache.json"
 COOLDOWN_TIMER = 10
 LAST_CALL_TIME = 0
+last_processed_query = None
 
 # -----------------------------------------------------------------------------
 # Lua Parser & Serializer
@@ -328,6 +329,10 @@ with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
             time.sleep(5)
             continue
 
+        # Check for IDLE status to reset the last processed query
+        if re.search(r'\["status"\]\s*=\s*"IDLE"', content):
+            last_processed_query = None
+
         # Regex Pre-check: Only proceed if status is SENT
         if not re.search(r'\["status"\]\s*=\s*"SENT"', content):
             time.sleep(5)
@@ -373,6 +378,14 @@ with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
                         
                         if last_msg and last_msg.get("sender") == "You":
                             user_query = last_msg.get("text")
+                            
+                            if user_query == last_processed_query:
+                                info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nSkipping redundant query: {user_query}")
+                                live.update(get_dashboard(Panel(info_text, title="Skipping Redundant Request", border_style="yellow")))
+                                time.sleep(2)
+                                continue
+
+                            last_processed_query = user_query
                             
                             # Decode Context
                             context = {}

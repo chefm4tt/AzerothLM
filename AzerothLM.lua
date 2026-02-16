@@ -98,12 +98,8 @@ f:SetScript("OnEvent", function(self, event, ...)
 		end
 
 		if db.status == "COMPLETE" then
-			local chat = db.chats[db.currentChatID]
-			if chat and db.response then
-				table.insert(chat.messages, { sender = "AI", text = db.response })
-			end
-			db.response = nil
 			db.status = "IDLE"
+			db.query = ""
 		end
 
 		if AzerothLM_UpdateTerminalDisplay then
