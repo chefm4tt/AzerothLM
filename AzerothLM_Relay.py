@@ -20,8 +20,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-1.5-flash")
 PATH = os.getenv("WOW_SAVED_VARIABLES_PATH")
 
 if not PATH or "YOUR_ACCOUNT_NAME" in PATH:
-    print("Error: WOW_SAVED_VARIABLES_PATH is missing or invalid in .env")
-    print("Please update it to point to your actual World of Warcraft Account folder.")
+    print("Configuration Error: Please update WOW_SAVED_VARIABLES_PATH in your .env file")
     sys.exit(1)
 
 PATH = os.path.normpath(PATH)
