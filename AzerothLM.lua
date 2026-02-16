@@ -98,6 +98,14 @@ f:SetScript("OnEvent", function(self, event, ...)
 		end
 
 		if db.status == "COMPLETE" then
+			-- Ensure the UI is created and shown to display the new message
+			if CreateAzerothLMFrame and not _G["AzerothLM_Frame"] then
+				CreateAzerothLMFrame()
+			end
+			if _G["AzerothLM_Frame"] then
+				_G["AzerothLM_Frame"]:Show()
+			end
+
 			db.status = "IDLE"
 			db.query = ""
 		end

@@ -469,7 +469,8 @@ with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
                                     
                                     latest_db["status"] = "COMPLETE"
                                     temp_path = PATH + ".tmp"
-                                    luadata.write(temp_path, latest_db, encoding='utf-8', indent='\t', prefix='AzerothLM_DB = ')
+                                    with open(temp_path, 'w', encoding='utf-8') as f:
+                                        f.write('AzerothLM_DB = ' + to_lua(latest_db))
                                     os.replace(temp_path, PATH)
             except Timeout:
                 time.sleep(2)
