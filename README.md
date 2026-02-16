@@ -38,12 +38,11 @@ World of Warcraft addons run in a sandboxed Lua environment with no direct inter
         ```
 
 3.  **API Configuration**:
-    *   Create a `.env` file inside the `AzerothLM` folder.
-    *   Add your Gemini API key and Model selection:
-        ```env
-        GEMINI_API_KEY=your_actual_api_key_here
-        MODEL_NAME=gemini/gemini-1.5-flash
-        ```
+    *   Rename the provided `.env.example` file to `.env`.
+    *   Open `.env` in a text editor.
+    *   **Required**: Update `WOW_SAVED_VARIABLES_PATH` to point to your specific WoW account folder.
+    *   **Required**: Paste your API key (e.g., `GEMINI_API_KEY`) into the appropriate field.
+    *   **Optional**: Uncomment the `MODEL_NAME` you wish to use (defaults to Gemini 1.5 Flash).
 
 ## Usage
 

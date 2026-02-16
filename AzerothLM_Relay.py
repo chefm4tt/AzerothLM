@@ -1,5 +1,6 @@
 import re
 import os
+import sys
 import time
 import luadata
 from dotenv import load_dotenv
@@ -16,7 +17,14 @@ load_dotenv()
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-1.5-flash")
 
 # Path to your SavedVariables file
-PATH = "C:/Program Files (x86)/World of Warcraft/_anniversary_/WTF/Account/JANKZ0R/SavedVariables/AzerothLM.lua"
+PATH = os.getenv("WOW_SAVED_VARIABLES_PATH")
+
+if not PATH or "YOUR_ACCOUNT_NAME" in PATH:
+    print("Error: WOW_SAVED_VARIABLES_PATH is missing or invalid in .env")
+    print("Please update it to point to your actual World of Warcraft Account folder.")
+    sys.exit(1)
+
+PATH = os.path.normpath(PATH)
 LOCK_PATH = PATH + ".lock"
 
 # -----------------------------------------------------------------------------
@@ -175,10 +183,13 @@ def decode_hex(s):
     return s
 
 def call_ai(user_query, game_context, chat_name):
-    # Adjust system instruction based on model prefix
-    system_instruction = "You are a specialized AI assistant for World of Warcraft: The Burning Crusade Classic. Use the provided JSON context (gear, professions, quests) to give specific, actionable advice. Format your responses using simple line breaks for compatibility with the WoW UI."
-    if "gemini" in MODEL_NAME.lower():
-        system_instruction += " Do not ask what game the user is playing; assume it is always TBC Classic."
+    # Universal system instruction for all models
+    system_instruction = (
+        "You are a specialized AI assistant for World of Warcraft: The Burning Crusade Classic. "
+        "Use the provided JSON context (gear, professions, quests) to give specific, actionable advice. "
+        "Do not ask what game the user is playing; assume it is always TBC Classic. "
+        "Format your responses using simple line breaks for compatibility with the WoW UI."
+    )
 
     try:
         response = completion(
@@ -193,6 +204,14 @@ def call_ai(user_query, game_context, chat_name):
         return f"API Error: {str(e)}"
 
 print(f"AzerothLM Relay running on: {PATH}")
+
+# Configuration Validation
+if "gemini" in MODEL_NAME.lower() and not os.getenv("GEMINI_API_KEY"):
+    print(f"[bold red]Error:[/] GEMINI_API_KEY not found in .env for model {MODEL_NAME}")
+elif "gpt" in MODEL_NAME.lower() and not os.getenv("OPENAI_API_KEY"):
+    print(f"[bold red]Error:[/] OPENAI_API_KEY not found in .env for model {MODEL_NAME}")
+elif "claude" in MODEL_NAME.lower() and not os.getenv("ANTHROPIC_API_KEY"):
+    print(f"[bold red]Error:[/] ANTHROPIC_API_KEY not found in .env for model {MODEL_NAME}")
 
 console = Console()
 
