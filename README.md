@@ -20,11 +20,16 @@ World of Warcraft addons run in a sandboxed Lua environment with no direct inter
 *   **Terminal UI**: A clean, movable in-game window with a scrolling history, color-coded messages (Cyan for You, Green for AI), and status indicators.
 *   **Relay Dashboard**: A modern, real-time CLI dashboard for the Python relay script that shows connection status, current model, and request processing progress.
 
+### Development & Mock Mode
+
+*   **Mock Mode**: Developers can enable `MOCK_MODE` in the `.env` to test the Lua-to-Python handshake and UI stability without consuming API quota.
+*   **Context Size**: The relay now provides a real-time **Context Size** indicator to monitor the data weight of gear and quests.
+
 ## Requirements
 
 *   **Game**: World of Warcraft: TBC Classic (or compatible client).
 *   **Runtime**: Python 3.x
-*   **Python Libraries**: Listed in `requirements.txt`.
+*   **Python Libraries**: `litellm`, `luadata`, `python-dotenv`, `filelock`, `rich`.
 
 ## Installation
 

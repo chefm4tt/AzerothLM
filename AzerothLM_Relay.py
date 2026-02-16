@@ -2,6 +2,7 @@ import re
 import os
 import sys
 import time
+import random
 import luadata
 from dotenv import load_dotenv
 from litellm import completion
@@ -14,7 +15,8 @@ from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
 load_dotenv()
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-1.5-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-2.5-flash")
+MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 
 # Path to your SavedVariables file
 PATH = os.getenv("WOW_SAVED_VARIABLES_PATH")
@@ -181,7 +183,21 @@ def decode_hex(s):
             return s
     return s
 
+def mock_call_ai(user_query, game_context, chat_name):
+    responses = [
+        "Analyzing your gear... You should prioritize upgrading your weapon in Karazhan.",
+        "Based on your professions, you should focus on transmuting Primal Might.",
+        "Your quest log indicates you are in Nagrand. Have you completed the Ring of Blood?",
+        "Detected 306 Skinning... you should head to Nagrand to farm Clefthoof leather.",
+        "Mock Response: The Legion holds no sway here.",
+    ]
+    time.sleep(2) # Simulate latency
+    return random.choice(responses)
+
 def call_ai(user_query, game_context, chat_name):
+    if MOCK_MODE:
+        return mock_call_ai(user_query, game_context, chat_name)
+
     # Universal system instruction for all models
     system_instruction = (
         "You are a specialized AI assistant for World of Warcraft: The Burning Crusade Classic. "
@@ -215,11 +231,18 @@ elif "claude" in MODEL_NAME.lower() and not os.getenv("ANTHROPIC_API_KEY"):
 console = Console()
 
 def get_watching_panel():
-    return Panel(Spinner("dots", text="Watching AzerothLM.lua..."), title="AzerothLM Relay", border_style="green")
+    status_text = "[yellow]MOCK MODE ACTIVE[/]" if MOCK_MODE else f"Model: [bold cyan]{MODEL_NAME}[/]"
+    return Panel(Spinner("dots", text=f"Watching AzerothLM.lua... {status_text}"), title="AzerothLM Relay", border_style="green")
 
-with Live(get_watching_panel(), refresh_per_second=10) as live:
+def get_dashboard(main_content):
+    mode_color = "yellow" if MOCK_MODE else "green"
+    mode_text = "MOCK" if MOCK_MODE else "LIVE"
+    mode_panel = Panel(f"Current Mode: [bold {mode_color}]{mode_text}[/]", border_style=mode_color)
+    return Group(mode_panel, main_content)
+
+with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
     while True:
-        live.update(get_watching_panel())
+        live.update(get_dashboard(get_watching_panel()))
         
         try:
             if os.path.exists(PATH):
@@ -281,11 +304,6 @@ with Live(get_watching_panel(), refresh_per_second=10) as live:
                         if last_msg and last_msg.get("sender") == "You":
                             user_query = last_msg.get("text")
                             
-                            # Update Display: Processing
-                            info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\n\n")
-                            info_text.append(Text("Calling AI...", style="yellow"))
-                            live.update(Panel(info_text, title="Processing Request", border_style="yellow"))
-
                             # Decode Context
                             context = {}
                             
@@ -323,8 +341,16 @@ with Live(get_watching_panel(), refresh_per_second=10) as live:
                                         decoded_quests.append(q_new)
                             context["quests"] = decoded_quests
 
+                            context_str = str(context)
+                            context_size = len(context_str.encode('utf-8'))
+
+                            # Update Display: Processing
+                            info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\nContext Size: [bold]{context_size}[/] bytes\n\n")
+                            info_text.append(Text("Calling AI...", style="yellow"))
+                            live.update(get_dashboard(Panel(info_text, title="Processing Request", border_style="yellow")))
+
                             # 3. Call AI
-                            ai_response = call_ai(user_query, str(context), chat_name)
+                            ai_response = call_ai(user_query, context_str, chat_name)
                             
                             # 4. Safety Buffer with Progress Bar
                             prog = Progress(
@@ -336,9 +362,9 @@ with Live(get_watching_panel(), refresh_per_second=10) as live:
                             
                             for _ in range(40):
                                 prog.advance(task_id)
-                                info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\n\n")
+                                info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\nContext Size: [bold]{context_size}[/] bytes\n\n")
                                 info_text.append(Text("Response Received. Waiting for Safety Buffer...\n", style="blue"))
-                                live.update(Panel(Group(info_text, prog), title="Safety Buffer", border_style="blue"))
+                                live.update(get_dashboard(Panel(Group(info_text, prog), title="Safety Buffer", border_style="blue")))
                                 time.sleep(0.1)
 
                             # 5. Re-read file to verify status and get latest state
