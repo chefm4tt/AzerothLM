@@ -20,18 +20,9 @@ function AzerothLM_UpdateTerminalDisplay()
 
 	local db = _G[DB_NAME]
 
-	-- Load Button Visibility
-	if f.loadBtn then
-		if AzerothLM_Signal and type(AzerothLM_Signal) == "table" and db and db.currentChatID and AzerothLM_Signal.chatID == db.currentChatID then
-			f.loadBtn:Show()
-		else
-			f.loadBtn:Hide()
-		end
-	end
-
 	if f.status and db then
 		if db.status == "SENT" then
-			f.status:SetText("Status: Thinking...")
+			f.status:SetText("Status: Waiting for AI... Sync again shortly.")
 		else
 			f.status:SetText("Status: Ready")
 		end
@@ -113,24 +104,9 @@ function CreateAzerothLMFrame()
 		ReloadUI()
 	end)
 
-	-- Load Button
-	f.loadBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate, BackdropTemplate")
-	f.loadBtn:SetSize(50, 20)
-	f.loadBtn:SetPoint("RIGHT", f.syncBtn, "LEFT", -5, 0)
-	f.loadBtn:SetText("Load")
-	f.loadBtn:SetBackdrop({
-		bgFile = "Interface\\Buttons\\WHITE8x8",
-		edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
-		tile = true, tileSize = 8, edgeSize = 8,
-		insets = { left = 3, right = 3, top = 3, bottom = 3 }
-	})
-	f.loadBtn:SetBackdropColor(0, 1, 0, 1)
-	f.loadBtn:SetScript("OnClick", function() AzerothLM_ManualPull() end)
-	f.loadBtn:Hide()
-
 	-- Status Label
 	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	f.status:SetPoint("RIGHT", f.loadBtn, "LEFT", -5, 0)
+	f.status:SetPoint("RIGHT", f.syncBtn, "LEFT", -5, 0)
 	f.status:SetText("Status: Ready")
 
 	-- Sidebar
@@ -221,7 +197,7 @@ function CreateAzerothLMFrame()
 				if f.status then f.status:SetText("Status: Thinking...") end
 				if db.currentChatID and db.chats[db.currentChatID] then
 					table.insert(db.chats[db.currentChatID].messages, { sender = "You", text = text })
-					table.insert(db.chats[db.currentChatID].messages, { sender = "System", text = "|cffffff00Message queued. Click the red Sync button to process.|r" })
+					table.insert(db.chats[db.currentChatID].messages, { sender = "System", text = "|cffffff00Message queued. Click Sync to send, then Sync again to load the response.|r" })
 				end
 				AzerothLM_UpdateTerminalDisplay()
 			end

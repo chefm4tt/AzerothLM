@@ -77,6 +77,13 @@ function AzerothLM_ManualPull()
 		if db and db.chats and signal.chatID then
 			local chat = db.chats[signal.chatID]
 			if chat then
+				-- Remove the system "queued" message before inserting the response
+				for i = #chat.messages, 1, -1 do
+					if chat.messages[i].sender == "System" and string.find(chat.messages[i].text, "Message queued") then
+						table.remove(chat.messages, i)
+						break
+					end
+				end
 				table.insert(chat.messages, { sender = "AI", text = signal.response })
 			end
 		end
@@ -86,7 +93,7 @@ function AzerothLM_ManualPull()
 		end
 		_G["AzerothLM_Signal"] = nil
 		if AzerothLM_UpdateTerminalDisplay then AzerothLM_UpdateTerminalDisplay() end
-		print('|cff00ff00[AzerothLM]|r Message successfully pulled!')
+		print('|cff00ff00[AzerothLM]|r Response loaded successfully!')
 	end
 end
 

@@ -25,3 +25,6 @@ venv/
 # Project
 *.lock
 *.tmp
+
+# wow addon specific
+AzerothLM_Signal.lua

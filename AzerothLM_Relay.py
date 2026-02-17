@@ -19,13 +19,18 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 load_dotenv()
 PATH = os.path.normpath(os.getenv("WOW_SAVED_VARIABLES_PATH") or "")
 LOCK_PATH = PATH + ".lock"
-SIGNAL_PATH = os.path.join(os.path.dirname(PATH), "AzerothLM_Signal.lua")
+ADDON_PATH = os.path.normpath(os.getenv("WOW_ADDON_PATH") or "")
+SIGNAL_PATH = os.path.join(ADDON_PATH, "AzerothLM_Signal.lua")
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-2.5-flash")
 TESTING_MODE = os.getenv("TESTING_MODE", "false").lower() == "true"
 
 if not PATH or PATH == "." or "YOUR_ACCOUNT_NAME" in PATH:
     print("Configuration Error: Please update WOW_SAVED_VARIABLES_PATH in your .env file")
+    sys.exit(1)
+
+if not ADDON_PATH or ADDON_PATH == ".":
+    print("Configuration Error: Please set WOW_ADDON_PATH in your .env file (e.g. Interface/AddOns/AzerothLM)")
     sys.exit(1)
 
 CACHE_FILE = "cache.json"
