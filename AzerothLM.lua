@@ -4,6 +4,7 @@ local addonName, ns = ...
 -- Constants & Globals
 -- ----------------------------------------------------------------------------
 local DB_NAME = "AzerothLM_DB"
+AzerothLM_Response = ""
 
 -- ----------------------------------------------------------------------------
 -- Core Logic
@@ -69,6 +70,39 @@ function AzerothLM_UpdatePlayerContext(silent)
 	end
 end
 
+function AzerothLM_ManualPull()
+	local signal = _G["AzerothLM_Signal"]
+	if signal and type(signal) == "table" and signal.response and signal.response ~= "" then
+		local db = _G[DB_NAME]
+		if db and db.chats and signal.chatID then
+			local chat = db.chats[signal.chatID]
+			if chat then
+				table.insert(chat.messages, { sender = "AI", text = signal.response })
+			end
+		end
+		if db then
+			db.status = "IDLE"
+			db.query = ""
+		end
+		_G["AzerothLM_Signal"] = nil
+		if AzerothLM_UpdateTerminalDisplay then AzerothLM_UpdateTerminalDisplay() end
+		print('|cff00ff00[AzerothLM]|r Message successfully pulled!')
+	end
+end
+
+function AzerothLM_ForceReset()
+	local db = _G[DB_NAME]
+	if db then
+		db.status = "IDLE"
+		db.query = ""
+		db.lastSyncTime = 0
+		if AzerothLM_UpdateTerminalDisplay then
+			AzerothLM_UpdateTerminalDisplay()
+		end
+		print("|cFF00FF00AzerothLM|r: Manual reset performed.")
+	end
+end
+
 -- ----------------------------------------------------------------------------
 -- Event Handling
 -- ----------------------------------------------------------------------------
@@ -77,9 +111,18 @@ f:RegisterEvent("ADDON_LOADED")
 f:SetScript("OnEvent", function(self, event, ...)
 	local name = ...
 	if event == "ADDON_LOADED" and name == "AzerothLM" then
+		print('[AzerothLM Debug] Signal Value: ' .. tostring(AzerothLM_Response))
+
+		AzerothLM_ManualPull()
+
+		-- Race Condition Protection
+		if self.processed then return end
+		self.processed = true
+
 		if not _G[DB_NAME] then
 			_G[DB_NAME] = {
 				status = "IDLE",
+				lastSyncTime = 0,
 				gear = {},
 				professions = {},
 				quests = {},
@@ -89,25 +132,13 @@ f:SetScript("OnEvent", function(self, event, ...)
 		end
 		
 		local db = _G[DB_NAME]
+		if not db.lastSyncTime then db.lastSyncTime = 0 end
 
 		if not db.chats then db.chats = {} end
 		if not db.currentChatID then db.currentChatID = 1 end
 
 		if #db.chats == 0 then
 			table.insert(db.chats, { name = "General", messages = {} })
-		end
-
-		if db.status == "COMPLETE" then
-			-- Ensure the UI is created and shown to display the new message
-			if CreateAzerothLMFrame and not _G["AzerothLM_Frame"] then
-				CreateAzerothLMFrame()
-			end
-			if _G["AzerothLM_Frame"] then
-				_G["AzerothLM_Frame"]:Show()
-			end
-
-			db.status = "IDLE"
-			db.query = ""
 		end
 
 		if AzerothLM_UpdateTerminalDisplay then

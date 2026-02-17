@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import random
-import luadata
 import json
 import hashlib
 import functools
@@ -18,18 +17,17 @@ from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
 load_dotenv()
+PATH = os.path.normpath(os.getenv("WOW_SAVED_VARIABLES_PATH") or "")
+LOCK_PATH = PATH + ".lock"
+SIGNAL_PATH = os.path.join(os.path.dirname(PATH), "AzerothLM_Signal.lua")
+
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-2.5-flash")
-MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
+TESTING_MODE = os.getenv("TESTING_MODE", "false").lower() == "true"
 
-# Path to your SavedVariables file
-PATH = os.getenv("WOW_SAVED_VARIABLES_PATH")
-
-if not PATH or "YOUR_ACCOUNT_NAME" in PATH:
+if not PATH or PATH == "." or "YOUR_ACCOUNT_NAME" in PATH:
     print("Configuration Error: Please update WOW_SAVED_VARIABLES_PATH in your .env file")
     sys.exit(1)
 
-PATH = os.path.normpath(PATH)
-LOCK_PATH = PATH + ".lock"
 CACHE_FILE = "cache.json"
 COOLDOWN_TIMER = 10
 LAST_CALL_TIME = 0
@@ -238,7 +236,35 @@ def _execute_completion(system_instruction, user_content):
     )
     return response.choices[0].message.content or ""
 
-def mock_call_ai(user_query, game_context, chat_name):
+def get_watching_panel():
+    status_text = "[blue]TESTING MODE ACTIVE[/]" if TESTING_MODE else f"Model: [bold cyan]{MODEL_NAME}[/]"
+    return Panel(Spinner("dots", text=f"Watching AzerothLM.lua... {status_text}"), title="AzerothLM Relay", border_style="green")
+
+def get_dashboard(main_content):
+    mode_color = "blue" if TESTING_MODE else "green"
+    mode_text = "TESTING" if TESTING_MODE else "LIVE"
+    mode_panel = Panel(f"Current Mode: [bold {mode_color}]{mode_text}[/]", border_style=mode_color)
+    return Group(mode_panel, main_content)
+
+def wait_for_file_ready(path, live_console=None):
+    retries = 0
+    max_retries = 10
+    while retries < max_retries:
+        try:
+            if os.path.exists(path):
+                # Attempt to open the file in append mode to check for exclusive access
+                with open(path, 'a'):
+                    pass
+            return True
+        except (IOError, PermissionError):
+            retries += 1
+            if live_console:
+                warning = Panel("[bold yellow]Waiting for WoW to release file...[/]", title="Sharing Violation", border_style="red")
+                live_console.update(get_dashboard(warning))
+            time.sleep(0.5)
+    return False
+
+def testing_call_ai(user_query, game_context, chat_name):
     responses = [
         "Analyzing your gear... You should prioritize upgrading your weapon in Karazhan.",
         "Based on your professions, you should focus on transmuting Primal Might.",
@@ -252,8 +278,8 @@ def mock_call_ai(user_query, game_context, chat_name):
 def call_ai(user_query, game_context, chat_name, live_console=None):
     global LAST_CALL_TIME
     
-    if MOCK_MODE:
-        return mock_call_ai(user_query, game_context, chat_name)
+    if TESTING_MODE:
+        return testing_call_ai(user_query, game_context, chat_name)
 
     # Rate Limiting
     elapsed = time.time() - LAST_CALL_TIME
@@ -289,7 +315,10 @@ def call_ai(user_query, game_context, chat_name, live_console=None):
     except Exception as e:
         return f"API Error: {str(e)}"
 
-print(f"AzerothLM Relay running on: {PATH}")
+print(f'Watching File: {PATH}')
+print(f'Writing Signal to: {SIGNAL_PATH}')
+if TESTING_MODE:
+    print("[Relay] Testing Mode initialized. Bypassing API calls.")
 
 # Configuration Validation
 if "gemini" in MODEL_NAME.lower() and not os.getenv("GEMINI_API_KEY"):
@@ -300,16 +329,6 @@ elif "claude" in MODEL_NAME.lower() and not os.getenv("ANTHROPIC_API_KEY"):
     print(f"[bold red]Error:[/] ANTHROPIC_API_KEY not found in .env for model {MODEL_NAME}")
 
 console = Console()
-
-def get_watching_panel():
-    status_text = "[yellow]MOCK MODE ACTIVE[/]" if MOCK_MODE else f"Model: [bold cyan]{MODEL_NAME}[/]"
-    return Panel(Spinner("dots", text=f"Watching AzerothLM.lua... {status_text}"), title="AzerothLM Relay", border_style="green")
-
-def get_dashboard(main_content):
-    mode_color = "yellow" if MOCK_MODE else "green"
-    mode_text = "MOCK" if MOCK_MODE else "LIVE"
-    mode_panel = Panel(f"Current Mode: [bold {mode_color}]{mode_text}[/]", border_style=mode_color)
-    return Group(mode_panel, main_content)
 
 with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
     while True:
@@ -330,153 +349,140 @@ with Live(get_dashboard(get_watching_panel()), refresh_per_second=10) as live:
             continue
 
         # Check for IDLE status to reset the last processed query
-        if re.search(r'\["status"\]\s*=\s*"IDLE"', content):
+        if '["status"] = "IDLE"' in content or '["status"]="IDLE"' in content or 'AzerothLM_Signal = nil' in content or not os.path.exists(SIGNAL_PATH):
             last_processed_query = None
 
-        # Regex Pre-check: Only proceed if status is SENT
-        if not re.search(r'\["status"\]\s*=\s*"SENT"', content):
-            time.sleep(5)
+        # Robust Status Detection
+        if '["status"] = "SENT"' not in content and '["status"]="SENT"' not in content:
+            time.sleep(1)
             continue
 
+        # Fail-Safe Extraction
+        chat_id = 1
+        user_query = None
+        
+        cid_match = re.search(r'\["currentChatID"\]\s*=\s*(\d+)', content)
+        if cid_match:
+            chat_id = int(cid_match.group(1))
+            
+        q_match = re.search(r'\["query"\]\s*=\s*"(.*?)"', content)
+        if q_match:
+            user_query = q_match.group(1)
+
+        # Attempt full parse for context
+        db = None
         try:
             parser = LuaParser(content)
             db = parser.parse()
         except Exception as e:
-            time.sleep(5)
-            continue
+            pass
 
-        if db and db.get("status") == "SENT":
-            if db.get("currentChatID") in [None, ""] or db.get("chats") in [None, ""]:
-                time.sleep(5)
-                continue
-
-            lock = FileLock(LOCK_PATH)
-            try:
-                with lock.acquire(timeout=0):
-                    # 1. Identify currentChatID
-                    chat_id = int(db.get("currentChatID", 1))
-                    chats = db.get("chats", {})
-                    
-                    # Handle chats as list or dict depending on parsing
-                    current_chat = None
-                    if isinstance(chats, dict):
-                        if 1 in chats:
-                            current_chat = chats.get(chat_id)
-                        else:
-                            current_chat = chats.get(chat_id)
-                    
-                    if current_chat:
-                        chat_name = current_chat.get("name", "Unknown")
-                        messages = current_chat.get("messages", {})
-                        
-                        # 2. Extract last user message
-                        last_idx = 0
-                        last_msg = None
-                        if isinstance(messages, dict) and messages:
-                            last_idx = max(k for k in messages.keys() if isinstance(k, int))
-                            last_msg = messages[last_idx]
-                        
+        # Fallback extraction if regex failed
+        chat_name = "Unknown"
+        if not user_query and db:
+            chat_id = int(db.get("currentChatID", 1))
+            chats = db.get("chats", {})
+            current_chat = chats.get(chat_id) if isinstance(chats, dict) else None
+            
+            if current_chat:
+                chat_name = current_chat.get("name", "Unknown")
+                messages = current_chat.get("messages", {})
+                if isinstance(messages, dict) and messages:
+                    int_keys = [k for k in messages.keys() if isinstance(k, int)]
+                    if int_keys:
+                        last_msg = messages[max(int_keys)]
                         if last_msg and last_msg.get("sender") == "You":
                             user_query = last_msg.get("text")
-                            
-                            if user_query == last_processed_query:
-                                info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nSkipping redundant query: {user_query}")
-                                live.update(get_dashboard(Panel(info_text, title="Skipping Redundant Request", border_style="yellow")))
-                                time.sleep(2)
-                                continue
+        elif db:
+            chats = db.get("chats", {})
+            current_chat = chats.get(chat_id) if isinstance(chats, dict) else None
+            if current_chat:
+                chat_name = current_chat.get("name", "Unknown")
 
-                            last_processed_query = user_query
-                            
-                            # Decode Context
-                            context = {}
-                            
-                            # Gear
-                            gear = db.get("gear", {})
-                            decoded_gear = {}
-                            if isinstance(gear, dict):
-                                 for k, v in gear.items():
-                                     if v: decoded_gear[str(k)] = decode_hex(v)
-                            context["gear"] = decoded_gear
+        if chat_name == "Unknown":
+            chat_names = re.findall(r'\["name"\]\s*=\s*"(.*?)"', content)
+            if chat_names and len(chat_names) >= chat_id:
+                chat_name = chat_names[chat_id - 1]
 
-                            # Professions
-                            profs = db.get("professions", {})
-                            decoded_profs = []
-                            if isinstance(profs, dict):
-                                sorted_keys = sorted([k for k in profs.keys() if isinstance(k, int)])
-                                for k in sorted_keys:
-                                    p = profs[k]
-                                    if isinstance(p, dict):
-                                        p_new = p.copy()
-                                        if "name" in p_new: p_new["name"] = decode_hex(p_new["name"])
-                                        decoded_profs.append(p_new)
-                            context["professions"] = decoded_profs
-
-                            # Quests
-                            quests = db.get("quests", {})
-                            decoded_quests = []
-                            if isinstance(quests, dict):
-                                sorted_keys = sorted([k for k in quests.keys() if isinstance(k, int)])
-                                for k in sorted_keys:
-                                    q = quests[k]
-                                    if isinstance(q, dict):
-                                        q_new = q.copy()
-                                        if "title" in q_new: q_new["title"] = decode_hex(q_new["title"])
-                                        decoded_quests.append(q_new)
-                            context["quests"] = decoded_quests
-
-                            context_str = str(context)
-                            context_size = len(context_str.encode('utf-8'))
-
-                            # Update Display: Processing
-                            info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\nContext Size: [bold]{context_size}[/] bytes\n\n")
-                            info_text.append(Text("Calling AI...", style="yellow"))
-                            live.update(get_dashboard(Panel(info_text, title="Processing Request", border_style="yellow")))
-
-                            # 3. Call AI
-                            ai_response = call_ai(user_query, context_str, chat_name, live)
-                            
-                            # 4. Safety Buffer with Progress Bar
-                            prog = Progress(
-                                BarColumn(),
-                                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                                TimeRemainingColumn()
-                            )
-                            task_id = prog.add_task("Safety Buffer", total=40)
-                            
-                            for _ in range(40):
-                                prog.advance(task_id)
-                                info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\nContext Size: [bold]{context_size}[/] bytes\n\n")
-                                info_text.append(Text("Response Received. Waiting for Safety Buffer...\n", style="blue"))
-                                live.update(get_dashboard(Panel(Group(info_text, prog), title="Safety Buffer", border_style="blue")))
-                                time.sleep(0.1)
-
-                            # 5. Re-read file to verify status and get latest state
-                            with open(PATH, 'r', encoding='utf-8') as f:
-                                current_content = f.read()
-                            parser = LuaParser(current_content)
-                            latest_db = parser.parse()
-
-                            if latest_db and latest_db.get("status") == "SENT":
-                                # Inject response into latest_db
-                                l_chat_id = int(latest_db.get("currentChatID", 1))
-                                l_chats = latest_db.get("chats", {})
-                                if isinstance(l_chats, dict) and l_chat_id in l_chats:
-                                    l_chat = l_chats[l_chat_id]
-                                    l_msgs = l_chat.get("messages", {})
-                                    next_id = max([k for k in l_msgs.keys() if isinstance(k, int)] or [0]) + 1
-                                    l_msgs[next_id] = {"sender": "AI", "text": ai_response}
-                                    l_chat["messages"] = l_msgs
-                                    
-                                    latest_db["status"] = "COMPLETE"
-                                    temp_path = PATH + ".tmp"
-                                    with open(temp_path, 'w', encoding='utf-8') as f:
-                                        f.write('AzerothLM_DB = ' + to_lua(latest_db))
-                                    os.replace(temp_path, PATH)
-            except Timeout:
-                time.sleep(2)
+        if user_query:
+            if user_query == last_processed_query and os.path.exists(SIGNAL_PATH):
+                time.sleep(1)
                 continue
+
+            print(f'[DEBUG] Trigger Found - ChatID: {chat_id}, Query: {user_query}')
+
+            # Decode Context
+            context = {}
+            if db:
+                # Gear
+                gear = db.get("gear", {})
+                decoded_gear = {}
+                if isinstance(gear, dict):
+                        for k, v in gear.items():
+                            if v: decoded_gear[str(k)] = decode_hex(v)
+                context["gear"] = decoded_gear
+
+                # Professions
+                profs = db.get("professions", {})
+                decoded_profs = []
+                if isinstance(profs, dict):
+                    sorted_keys = sorted([k for k in profs.keys() if isinstance(k, int)])
+                    for k in sorted_keys:
+                        p = profs[k]
+                        if isinstance(p, dict):
+                            p_new = p.copy()
+                            if "name" in p_new: p_new["name"] = decode_hex(p_new["name"])
+                            decoded_profs.append(p_new)
+                context["professions"] = decoded_profs
+
+                # Quests
+                quests = db.get("quests", {})
+                decoded_quests = []
+                if isinstance(quests, dict):
+                    sorted_keys = sorted([k for k in quests.keys() if isinstance(k, int)])
+                    for k in sorted_keys:
+                        q = quests[k]
+                        if isinstance(q, dict):
+                            q_new = q.copy()
+                            if "title" in q_new: q_new["title"] = decode_hex(q_new["title"])
+                            decoded_quests.append(q_new)
+                context["quests"] = decoded_quests
+
+            context_str = str(context)
+            context_size = len(context_str.encode('utf-8'))
+
+            # Update Display: Processing
+            info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\nContext Size: [bold]{context_size}[/] bytes\n\n")
+            info_text.append(Text("Calling AI...", style="yellow"))
+            live.update(get_dashboard(Panel(info_text, title="Processing Request", border_style="yellow")))
+
+            # 3. Call AI
+            ai_response = call_ai(user_query, context_str, chat_name, live)
+            
+            # 4. Write response to signal file
+            try:
+                signal_data = {
+                    "chatID": chat_id,
+                    "query": user_query,
+                    "response": ai_response
+                }
+                try:
+                    lua_table = to_lua(signal_data)
+                except Exception as e:
+                    print(f"[Error] Serialization failed: {e}")
+                    lua_table = '{ ["chatID"] = ' + str(chat_id) + ', ["query"] = "Error", ["response"] = "Serialization Error" }'
+
+                with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
+                    f.write(f'AzerothLM_Signal = {lua_table}')
+                
+                last_processed_query = user_query
+                print(f'[Mailbox] Message delivered for Chat ID: {chat_id}. Waiting for game to pull.')
+                info_text = Text.from_markup(f"Chat: [bold cyan]{chat_name}[/]\nModel: [bold magenta]{MODEL_NAME}[/]\nQuery: {user_query}\nContext Size: [bold]{context_size}[/] bytes\n\n")
+                info_text.append(Text("[Relay] Signal Written. Ignoring further SENT triggers for this query..", style="bold green"))
+                live.update(get_dashboard(Panel(info_text, title="Response Ready", border_style="green")))
             except Exception as e:
-                time.sleep(5)
-                continue
+                info_text = Text(f"Failed to write signal file: {e}", style="bold red")
+                live.update(get_dashboard(Panel(info_text, title="Error", border_style="red")))
+                time.sleep(2)
         
-        time.sleep(5)
+        time.sleep(1)

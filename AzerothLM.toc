@@ -4,5 +4,6 @@
 ## Author: chefm4tt
 ## SavedVariables: AzerothLM_DB
 
+AzerothLM_Signal.lua
 AzerothLM.lua
 AzerothLM_UI.lua

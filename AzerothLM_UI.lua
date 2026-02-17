@@ -19,12 +19,28 @@ function AzerothLM_UpdateTerminalDisplay()
 	if not f then return end
 
 	local db = _G[DB_NAME]
+
+	-- Load Button Visibility
+	if f.loadBtn then
+		if AzerothLM_Signal and type(AzerothLM_Signal) == "table" and db and db.currentChatID and AzerothLM_Signal.chatID == db.currentChatID then
+			f.loadBtn:Show()
+		else
+			f.loadBtn:Hide()
+		end
+	end
+
 	if f.status and db then
 		if db.status == "SENT" then
 			f.status:SetText("Status: Thinking...")
 		else
 			f.status:SetText("Status: Ready")
 		end
+	end
+
+	-- Sync Button Visibility
+	if f.syncBtn and f.input and db then
+		local pendingQuery = f.input:GetText() ~= ""
+		if db.status == "SENT" or pendingQuery then f.syncBtn:Show() else f.syncBtn:Hide() end
 	end
 
 	f.history:Clear()
@@ -82,14 +98,39 @@ function CreateAzerothLMFrame()
 	f.syncBtn:SetSize(50, 20)
 	f.syncBtn:SetPoint("RIGHT", f.closeBtn, "LEFT", -5, 0)
 	f.syncBtn:SetText("Sync")
-	f.syncBtn:SetScript("OnClick", function()
+	f.syncBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	f.syncBtn:SetScript("OnClick", function(self, button)
+		if button == "RightButton" then
+			if AzerothLM_ForceReset then AzerothLM_ForceReset() end
+			return
+		end
+
+		local db = _G[DB_NAME]
+		if db then
+			db.lastSyncTime = GetTime()
+		end
 		print("|cFF00FF00AzerothLM|r: Syncing with AI...")
 		ReloadUI()
 	end)
 
+	-- Load Button
+	f.loadBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate, BackdropTemplate")
+	f.loadBtn:SetSize(50, 20)
+	f.loadBtn:SetPoint("RIGHT", f.syncBtn, "LEFT", -5, 0)
+	f.loadBtn:SetText("Load")
+	f.loadBtn:SetBackdrop({
+		bgFile = "Interface\\Buttons\\WHITE8x8",
+		edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+		tile = true, tileSize = 8, edgeSize = 8,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 }
+	})
+	f.loadBtn:SetBackdropColor(0, 1, 0, 1)
+	f.loadBtn:SetScript("OnClick", function() AzerothLM_ManualPull() end)
+	f.loadBtn:Hide()
+
 	-- Status Label
 	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	f.status:SetPoint("RIGHT", f.syncBtn, "LEFT", -5, 0)
+	f.status:SetPoint("RIGHT", f.loadBtn, "LEFT", -5, 0)
 	f.status:SetText("Status: Ready")
 
 	-- Sidebar
@@ -180,6 +221,7 @@ function CreateAzerothLMFrame()
 				if f.status then f.status:SetText("Status: Thinking...") end
 				if db.currentChatID and db.chats[db.currentChatID] then
 					table.insert(db.chats[db.currentChatID].messages, { sender = "You", text = text })
+					table.insert(db.chats[db.currentChatID].messages, { sender = "System", text = "|cffffff00Message queued. Click the red Sync button to process.|r" })
 				end
 				AzerothLM_UpdateTerminalDisplay()
 			end
@@ -263,6 +305,22 @@ function CreateAzerothLMFrame()
 	f:SetScript("OnShow", function()
 		f:RefreshTabs()
 		AzerothLM_UpdateTerminalDisplay()
+	end)
+
+	f:RegisterEvent("PLAYER_ENTERING_WORLD")
+	f:SetScript("OnEvent", function(self, event)
+		if event == "PLAYER_ENTERING_WORLD" then
+			AzerothLM_UpdateTerminalDisplay()
+		end
+	end)
+
+	local timeSinceLastUpdate = 0
+	f:SetScript("OnUpdate", function(self, elapsed)
+		timeSinceLastUpdate = timeSinceLastUpdate + elapsed
+		if timeSinceLastUpdate >= 2 then
+			timeSinceLastUpdate = 0
+			AzerothLM_UpdateTerminalDisplay()
+		end
 	end)
 
 	f:Hide()
