@@ -234,6 +234,15 @@ def slugify(title):
     slug = re.sub(r'-+', '-', slug)
     return slug.strip('-')
 
+def topic_not_found_hint(slug, state):
+    """Return a formatted error + hint for a missing topic slug."""
+    if state["topics"]:
+        return (f"[red]Topic '{slug}' not found.[/red]\n"
+                f"[yellow]Hint: Use /topics to see available topics.[/yellow]")
+    else:
+        return (f"[red]Topic '{slug}' not found.[/red]\n"
+                f"[yellow]Hint: No topics exist yet. Use /new <title> to create one.[/yellow]")
+
 def get_cache_key(model, query, context):
     raw = f"{model}{query}{context}"
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
@@ -616,7 +625,10 @@ def ask_question(topic_slug: str, question: str) -> str:
     state = load_journal_state()
 
     if topic_slug not in state["topics"]:
-        return f"Error: Topic '{topic_slug}' not found. Use create_topic first."
+        if state["topics"]:
+            return f"Error: Topic '{topic_slug}' not found. Use list_topics to see available slugs."
+        else:
+            return f"Error: No topics exist yet. Use create_topic to create one first."
 
     topic = state["topics"][topic_slug]
 
@@ -1085,7 +1097,7 @@ def run_cli():
             sync_pending_and_write_signal()
             state = load_journal_state()
             if slug not in state["topics"]:
-                console.print(f"[red]Topic '{slug}' not found. Use /topics to see available slugs.[/red]")
+                console.print(topic_not_found_hint(slug, state))
                 continue
 
             topic = state["topics"][slug]
@@ -1143,7 +1155,7 @@ def run_cli():
                 continue
             state = load_journal_state()
             if slug not in state["topics"]:
-                console.print(f"[red]Topic '{slug}' not found.[/red]")
+                console.print(topic_not_found_hint(slug, state))
                 continue
             topic = state["topics"][slug]
             console.print(f"\n[bold yellow]{topic['title']}[/bold yellow]")
@@ -1166,7 +1178,7 @@ def run_cli():
                 continue
             state = load_journal_state()
             if slug not in state["topics"]:
-                console.print(f"[red]Topic '{slug}' not found.[/red]")
+                console.print(topic_not_found_hint(slug, state))
                 continue
             title = state["topics"][slug]["title"]
             del state["topics"][slug]
