@@ -29,9 +29,12 @@ pip install -r requirements.txt
    ```bash
    cp .env.example .env
    ```
-2. Open `.env` in a text editor and update:
-   - `WOW_SAVED_VARIABLES_PATH` — path to your WoW account's `SavedVariables/AzerothLM.lua` file
-   - `WOW_ADDON_PATH` — path to your `Interface/AddOns/AzerothLM` folder
+2. Open `.env` in a text editor and update the two path settings. Replace `YOUR_ACCOUNT_NAME` with your actual WoW account folder name:
+   ```
+   WOW_SAVED_VARIABLES_PATH=C:\Program Files (x86)\World of Warcraft\_anniversary_\WTF\Account\YOUR_ACCOUNT_NAME\SavedVariables\AzerothLM.lua
+   WOW_ADDON_PATH=C:\Program Files (x86)\World of Warcraft\_anniversary_\Interface\AddOns\AzerothLM
+   ```
+   > **Tip**: To find your account name, browse to `World of Warcraft\_anniversary_\WTF\Account\` — you'll see a folder with your account name (e.g., `MYACCOUNT123`).
 3. Add an API key using one of these methods:
    - **Manual**: Paste your key into `.env` (e.g., `GEMINI_API_KEY=your_key_here`)
    - **Interactive**: Start the relay first, then use the `/model add` command
