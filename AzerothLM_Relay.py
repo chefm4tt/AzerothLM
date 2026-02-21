@@ -944,7 +944,7 @@ def run_config_check(console):
 
 def handle_test(console, rest):
     global TESTING_MODE
-    subcmd = rest.strip().lower()
+    subcmd = rest.strip().split()[0].lower() if rest.strip() else ""
 
     if subcmd == "on":
         TESTING_MODE = True
@@ -1036,7 +1036,7 @@ def run_cli():
             help_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
             help_table.add_column("Command", style="cyan")
             help_table.add_column("Description")
-            help_table.add_row("/new <title>", "Create a new research topic")
+            help_table.add_row("/new <title>", "Create a new research topic (title becomes the slug)")
             help_table.add_row("/ask <slug> <question>", "Ask a question on a topic")
             help_table.add_row("/topics", "List all topics")
             help_table.add_row("/view <slug>", "View full Q&A history for a topic")
@@ -1044,11 +1044,11 @@ def run_cli():
             help_table.add_row("/model", "Show providers and models")
             help_table.add_row("/model add", "Add a new provider API key")
             help_table.add_row("/model switch", "Switch to a different model")
-            help_table.add_row("/test on|off", "Toggle test mode (mock responses)")
+            help_table.add_row("/test [on|off]", "Toggle test mode, or show current status")
             help_table.add_row("/context", "Show character context (gear, professions, quests)")
             help_table.add_row("/usage", "Show API usage stats for this session")
             help_table.add_row("/status", "Show relay configuration")
-            help_table.add_row("/quit", "Exit the relay")
+            help_table.add_row("/quit", "Exit the relay (also: /exit, /q)")
             console.print(help_table)
 
         # -- /quit --------------------------------------------------------
@@ -1065,10 +1065,12 @@ def run_cli():
             slug = slugify(title)
             if not slug:
                 console.print("[red]Could not generate a valid slug from that title.[/red]")
+                console.print("[yellow]Hint: Use letters, numbers, or spaces in the title.[/yellow]")
                 continue
             state = load_journal_state()
             if slug in state["topics"]:
-                console.print(f"[yellow]Topic '{slug}' already exists.[/yellow]")
+                existing_title = state["topics"][slug]["title"]
+                console.print(f"[yellow]Topic '{slug}' already exists ('{existing_title}'). Choose a different title.[/yellow]")
                 continue
             now = int(time.time())
             state["topics"][slug] = {
@@ -1149,7 +1151,7 @@ def run_cli():
 
         # -- /view <slug> -------------------------------------------------
         elif cmd == "/view":
-            slug = rest.strip()
+            slug = rest.strip().strip('"').strip("'")
             if not slug:
                 console.print("[yellow]Usage: /view <slug>[/yellow]")
                 continue
@@ -1162,7 +1164,7 @@ def run_cli():
             console.print(f"[dim]Model: {topic.get('model', '?')} | Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(topic.get('created_at', 0)))}[/dim]\n")
             entries = topic.get("entries", [])
             if not entries:
-                console.print("[dim]No entries yet.[/dim]")
+                console.print(f"[dim]No entries yet. Use /ask {slug} <question> to add one.[/dim]")
                 continue
             for i, entry in enumerate(entries, 1):
                 ts = time.strftime("%H:%M", time.localtime(entry.get("timestamp", 0)))
@@ -1172,7 +1174,7 @@ def run_cli():
 
         # -- /delete <slug> -----------------------------------------------
         elif cmd == "/delete":
-            slug = rest.strip()
+            slug = rest.strip().strip('"').strip("'")
             if not slug:
                 console.print("[yellow]Usage: /delete <slug>[/yellow]")
                 continue
