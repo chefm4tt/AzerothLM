@@ -4,7 +4,6 @@ local addonName, ns = ...
 -- Constants & Globals
 -- ----------------------------------------------------------------------------
 local DB_NAME = "AzerothLM_DB"
-AzerothLM_Response = ""
 
 -- ----------------------------------------------------------------------------
 -- Core Logic
@@ -17,13 +16,11 @@ local function StringToHex(str)
 end
 
 function AzerothLM_UpdatePlayerContext(silent)
-	-- Ensure DB exists
 	if not _G[DB_NAME] then
-		_G[DB_NAME] = { status = "IDLE" }
+		_G[DB_NAME] = {}
 	end
-	
+
 	local db = _G[DB_NAME]
-	db.status = "SCANNING"
 	if not silent then
 		print("|cFF00FF00AzerothLM|r: Refreshing character data...")
 	end
@@ -64,50 +61,146 @@ function AzerothLM_UpdatePlayerContext(silent)
 		end
 	end
 
-	db.status = "IDLE"
+	db.lastScanTime = time()
 	if not silent then
 		print("|cFF00FF00AzerothLM|r: Data refresh complete.")
 	end
 end
 
-function AzerothLM_ManualPull()
+-- ----------------------------------------------------------------------------
+-- Signal Merge — imports topic data from AzerothLM_Signal into db.journal
+-- ----------------------------------------------------------------------------
+function AzerothLM_MergeSignal()
 	local signal = _G["AzerothLM_Signal"]
-	if signal and type(signal) == "table" and signal.response and signal.response ~= "" then
-		local db = _G[DB_NAME]
-		if db and db.chats and signal.chatID then
-			local chat = db.chats[signal.chatID]
-			if chat then
-				-- Remove the system "queued" message before inserting the response
-				for i = #chat.messages, 1, -1 do
-					if chat.messages[i].sender == "System" and string.find(chat.messages[i].text, "Message queued") then
-						table.remove(chat.messages, i)
-						break
+	if not signal or type(signal) ~= "table" then return 0 end
+
+	local db = _G[DB_NAME]
+	if not db or not db.journal then return 0 end
+
+	local newEntries = 0
+
+	for slug, topicData in pairs(signal) do
+		if type(topicData) == "table" and topicData.title then
+			local existing = db.journal[slug]
+
+			if not existing then
+				-- Brand new topic: import with empty entries (updatedAt = 0 so all entries pass watermark)
+				db.journal[slug] = {
+					title = topicData.title,
+					createdAt = topicData.createdAt or 0,
+					updatedAt = 0,
+					model = topicData.model or "unknown",
+					entries = {},
+				}
+				existing = db.journal[slug]
+			end
+
+			-- Watermark: use last existing entry's timestamp (NOT updatedAt)
+			local lastTimestamp = 0
+			if existing.entries and #existing.entries > 0 then
+				lastTimestamp = existing.entries[#existing.entries].timestamp or 0
+			end
+
+			-- Merge entries newer than watermark
+			if topicData.entries and type(topicData.entries) == "table" then
+				for _, entry in ipairs(topicData.entries) do
+					if type(entry) == "table" and entry.timestamp and entry.timestamp > lastTimestamp then
+						table.insert(existing.entries, {
+							question = entry.question or "",
+							answer = entry.answer or "",
+							timestamp = entry.timestamp,
+						})
+						newEntries = newEntries + 1
 					end
 				end
-				table.insert(chat.messages, { sender = "AI", text = signal.response })
+			end
+
+			-- Update metadata
+			if topicData.updatedAt and topicData.updatedAt > (existing.updatedAt or 0) then
+				existing.updatedAt = topicData.updatedAt
+			end
+			if topicData.model then
+				existing.model = topicData.model
 			end
 		end
-		if db then
-			db.status = "IDLE"
-			db.query = ""
-		end
-		_G["AzerothLM_Signal"] = nil
-		if AzerothLM_UpdateTerminalDisplay then AzerothLM_UpdateTerminalDisplay() end
-		print('|cff00ff00[AzerothLM]|r Response loaded successfully!')
 	end
+
+	-- Deletion sync: remove journal topics missing from signal (only if signal has content)
+	local signalHasContent = false
+	for _ in pairs(signal) do signalHasContent = true; break end
+
+	if signalHasContent then
+		for slug, _ in pairs(db.journal) do
+			if not signal[slug] then
+				db.journal[slug] = nil
+				if db.currentTopicSlug == slug then
+					db.currentTopicSlug = nil
+				end
+			end
+		end
+	end
+
+	-- Clear runtime global (file on disk persists; timestamp guard prevents re-import)
+	_G["AzerothLM_Signal"] = nil
+
+	return newEntries
 end
 
-function AzerothLM_ForceReset()
-	local db = _G[DB_NAME]
-	if db then
-		db.status = "IDLE"
-		db.query = ""
-		db.lastSyncTime = 0
-		if AzerothLM_UpdateTerminalDisplay then
-			AzerothLM_UpdateTerminalDisplay()
+-- ----------------------------------------------------------------------------
+-- Legacy Migration — converts old chat-based DB to journal format (one-time)
+-- ----------------------------------------------------------------------------
+local function MigrateLegacyChats(db)
+	if not db.chats or #db.chats == 0 then return end
+	if db.journalVersion and db.journalVersion >= 1 then return end
+
+	if not db.journal then db.journal = {} end
+
+	for i, chat in ipairs(db.chats) do
+		local chatName = chat.name or ("Chat " .. i)
+		local slug = "legacy-" .. i
+
+		local entries = {}
+		local messages = chat.messages or {}
+
+		-- Pair consecutive You/AI messages into Q&A entries
+		local j = 1
+		while j <= #messages do
+			local msg = messages[j]
+			if msg.sender == "You" then
+				local question = msg.text or ""
+				local answer = ""
+				if j + 1 <= #messages and messages[j + 1].sender == "AI" then
+					answer = messages[j + 1].text or ""
+					j = j + 1
+				end
+				table.insert(entries, {
+					question = question,
+					answer = answer,
+					timestamp = time(),
+				})
+			end
+			j = j + 1
 		end
-		print("|cFF00FF00AzerothLM|r: Manual reset performed.")
+
+		if #entries > 0 then
+			db.journal[slug] = {
+				title = chatName,
+				createdAt = time(),
+				updatedAt = time(),
+				model = "migrated",
+				entries = entries,
+			}
+		end
 	end
+
+	-- Clean up legacy fields
+	db.chats = nil
+	db.currentChatID = nil
+	db.status = nil
+	db.query = nil
+	db.response = nil
+	db.lastSyncTime = nil
+	db.journalVersion = 1
 end
 
 -- ----------------------------------------------------------------------------
@@ -118,38 +211,47 @@ f:RegisterEvent("ADDON_LOADED")
 f:SetScript("OnEvent", function(self, event, ...)
 	local name = ...
 	if event == "ADDON_LOADED" and name == "AzerothLM" then
-		print('[AzerothLM Debug] Signal Value: ' .. tostring(AzerothLM_Response))
-
-		AzerothLM_ManualPull()
-
-		-- Race Condition Protection
 		if self.processed then return end
 		self.processed = true
 
+		-- Initialize DB with new schema
 		if not _G[DB_NAME] then
 			_G[DB_NAME] = {
-				status = "IDLE",
-				lastSyncTime = 0,
 				gear = {},
 				professions = {},
 				quests = {},
-				chats = {},
-				currentChatID = 1,
+				journal = {},
+				currentTopicSlug = nil,
+				lastScanTime = 0,
+				journalVersion = 1,
 			}
 		end
-		
+
 		local db = _G[DB_NAME]
-		if not db.lastSyncTime then db.lastSyncTime = 0 end
 
-		if not db.chats then db.chats = {} end
-		if not db.currentChatID then db.currentChatID = 1 end
+		-- Ensure new fields exist on existing DBs
+		if not db.journal then db.journal = {} end
+		if not db.journalVersion then db.journalVersion = 0 end
+		if not db.lastScanTime then db.lastScanTime = 0 end
 
-		if #db.chats == 0 then
-			table.insert(db.chats, { name = "General", messages = {} })
+		-- Migrate legacy chats if present
+		MigrateLegacyChats(db)
+
+		-- Merge signal data
+		local newEntries = AzerothLM_MergeSignal()
+
+		-- Auto-scan character context
+		AzerothLM_UpdatePlayerContext(true)
+
+		-- Update display if frame exists
+		if AzerothLM_UpdateJournalDisplay then
+			AzerothLM_UpdateJournalDisplay()
 		end
 
-		if AzerothLM_UpdateTerminalDisplay then
-			AzerothLM_UpdateTerminalDisplay()
+		if newEntries > 0 then
+			print(string.format("|cFF00FF00AzerothLM|r: Loaded %d new journal entries.", newEntries))
+		else
+			print("|cFF00FF00AzerothLM|r: Research Journal ready.")
 		end
 
 		self:UnregisterEvent("ADDON_LOADED")
@@ -161,13 +263,34 @@ end)
 -- ----------------------------------------------------------------------------
 SLASH_AZEROTHLM1 = "/alm"
 SlashCmdList["AZEROTHLM"] = function(msg)
+	msg = strtrim(msg or "")
+
 	if msg == "scan" then
 		AzerothLM_UpdatePlayerContext()
+
+	elseif msg == "refresh" then
+		print("|cFF00FF00AzerothLM|r: Reloading to pull latest journal data...")
+		ReloadUI()
+
+	elseif msg == "topics" then
+		local db = _G[DB_NAME]
+		if db and db.journal then
+			local count = 0
+			for slug, topic in pairs(db.journal) do
+				count = count + 1
+				local entryCount = topic.entries and #topic.entries or 0
+				print(string.format("|cFF00FF00AzerothLM|r: [%s] %s (%d entries)", slug, topic.title, entryCount))
+			end
+			if count == 0 then
+				print("|cFF00FF00AzerothLM|r: No topics yet. Use MCP tools to create one.")
+			end
+		end
+
 	else
 		if not _G["AzerothLM_Frame"] then
 			CreateAzerothLMFrame()
 		end
-		local f = _G["AzerothLM_Frame"]
-		f:SetShown(not f:IsShown())
+		local frame = _G["AzerothLM_Frame"]
+		frame:SetShown(not frame:IsShown())
 	end
 end

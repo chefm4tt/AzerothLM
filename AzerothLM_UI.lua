@@ -2,7 +2,7 @@ local addonName, ns = ...
 local DB_NAME = "AzerothLM_DB"
 
 -- ----------------------------------------------------------------------------
--- UI Logic
+-- Utilities
 -- ----------------------------------------------------------------------------
 local function HexToText(hex)
 	if not hex then return "" end
@@ -14,54 +14,97 @@ local function HexToText(hex)
 	return hex
 end
 
-function AzerothLM_UpdateTerminalDisplay()
+-- ----------------------------------------------------------------------------
+-- Journal Display
+-- ----------------------------------------------------------------------------
+function AzerothLM_UpdateJournalDisplay()
 	local f = _G["AzerothLM_Frame"]
 	if not f then return end
 
 	local db = _G[DB_NAME]
+	if not db or not db.journal then return end
 
-	if f.status and db then
-		if db.status == "SENT" then
-			f.status:SetText("Status: Waiting for AI... Sync again shortly.")
-		else
-			f.status:SetText("Status: Ready")
-		end
+	-- Update sidebar topic list
+	if f.RefreshTopics then
+		f:RefreshTopics()
 	end
 
-	-- Sync Button Visibility
-	if f.syncBtn and f.input and db then
-		local pendingQuery = f.input:GetText() ~= ""
-		if db.status == "SENT" or pendingQuery then f.syncBtn:Show() else f.syncBtn:Hide() end
-	end
-
+	-- Clear the main content area
 	f.history:Clear()
-	if not db or not db.chats or not db.currentChatID then return end
-	
-	local chat = db.chats[db.currentChatID]
-	if not chat then return end
 
-	for _, msg in ipairs(chat.messages) do
-		local color = (msg.sender == "You") and "|cFF00FFFF" or "|cFF00FF00"
-		local senderName = (msg.sender == "AI") and "ALM" or msg.sender
-		local text = HexToText(msg.text)
-		local lines = { strsplit("\n", text) }
-		local headerPrinted = false
-		for _, line in ipairs(lines) do
+	local slug = db.currentTopicSlug
+	if not slug or not db.journal[slug] then
+		f.history:AddMessage("|cFF888888No topic selected. Use the sidebar to choose a topic.|r")
+		if f.topicHeader then f.topicHeader:SetText("") end
+		if f.topicMeta then f.topicMeta:SetText("") end
+		return
+	end
+
+	local topic = db.journal[slug]
+
+	-- Update header
+	if f.topicHeader then
+		f.topicHeader:SetText("|cFFFFD100" .. (topic.title or slug) .. "|r")
+	end
+	if f.topicMeta then
+		local entryCount = topic.entries and #topic.entries or 0
+		f.topicMeta:SetText(string.format(
+			"|cFF888888Model: %s | Entries: %d|r",
+			topic.model or "unknown",
+			entryCount
+		))
+	end
+
+	-- Render entries
+	if not topic.entries or #topic.entries == 0 then
+		f.history:AddMessage("|cFF888888No entries yet. Use MCP tools to ask a question on this topic.|r")
+		return
+	end
+
+	for i, entry in ipairs(topic.entries) do
+		-- Question (cyan)
+		local qText = entry.question or ""
+		local qLines = { strsplit("\n", qText) }
+		local qHeaderPrinted = false
+		for _, line in ipairs(qLines) do
 			if line and line ~= "" then
-				if not headerPrinted then
-					f.history:AddMessage(color .. senderName .. ":|r " .. line)
-					headerPrinted = true
+				if not qHeaderPrinted then
+					f.history:AddMessage(string.format("|cFF00FFFFQ%d:|r %s", i, line))
+					qHeaderPrinted = true
+				else
+					f.history:AddMessage("    " .. line)
+				end
+			end
+		end
+
+		-- Answer (green)
+		local aText = entry.answer or ""
+		local aLines = { strsplit("\n", aText) }
+		local aHeaderPrinted = false
+		for _, line in ipairs(aLines) do
+			if line and line ~= "" then
+				if not aHeaderPrinted then
+					f.history:AddMessage("|cFF00FF00A:|r " .. line)
+					aHeaderPrinted = true
 				else
 					f.history:AddMessage(line)
 				end
 			end
 		end
+
+		-- Separator between entries
+		if i < #topic.entries then
+			f.history:AddMessage(" ")
+		end
 	end
 end
 
+-- ----------------------------------------------------------------------------
+-- Frame Creation
+-- ----------------------------------------------------------------------------
 function CreateAzerothLMFrame()
 	local f = CreateFrame("Frame", "AzerothLM_Frame", UIParent, "BackdropTemplate")
-	f:SetSize(550, 350)
+	f:SetSize(650, 450)
 	f:SetPoint("CENTER")
 	f:SetBackdrop({
 		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -78,42 +121,26 @@ function CreateAzerothLMFrame()
 	-- Title
 	f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	f.title:SetPoint("TOP", 0, -12)
-	f.title:SetText("AzerothLM Terminal")
+	f.title:SetText("AzerothLM Research Journal")
 
 	-- Close Button
 	f.closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
 	f.closeBtn:SetPoint("TOPRIGHT", -2, -2)
 
-	-- Sync Button
-	f.syncBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.syncBtn:SetSize(50, 20)
-	f.syncBtn:SetPoint("RIGHT", f.closeBtn, "LEFT", -5, 0)
-	f.syncBtn:SetText("Sync")
-	f.syncBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-	f.syncBtn:SetScript("OnClick", function(self, button)
-		if button == "RightButton" then
-			if AzerothLM_ForceReset then AzerothLM_ForceReset() end
-			return
-		end
-
-		local db = _G[DB_NAME]
-		if db then
-			db.lastSyncTime = GetTime()
-		end
-		print("|cFF00FF00AzerothLM|r: Syncing with AI...")
+	-- Refresh Button
+	f.refreshBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	f.refreshBtn:SetSize(60, 20)
+	f.refreshBtn:SetPoint("RIGHT", f.closeBtn, "LEFT", -5, 0)
+	f.refreshBtn:SetText("Refresh")
+	f.refreshBtn:SetScript("OnClick", function()
 		ReloadUI()
 	end)
 
-	-- Status Label
-	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	f.status:SetPoint("RIGHT", f.syncBtn, "LEFT", -5, 0)
-	f.status:SetText("Status: Ready")
-
 	-- Sidebar
 	f.sidebar = CreateFrame("Frame", nil, f, "BackdropTemplate")
-	f.sidebar:SetPoint("TOPLEFT", 12, -12)
+	f.sidebar:SetPoint("TOPLEFT", 12, -30)
 	f.sidebar:SetPoint("BOTTOMLEFT", 12, 12)
-	f.sidebar:SetWidth(130)
+	f.sidebar:SetWidth(140)
 	f.sidebar:SetBackdrop({
 		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -121,198 +148,133 @@ function CreateAzerothLMFrame()
 		insets = { left = 4, right = 4, top = 4, bottom = 4 }
 	})
 
-	-- Clear Button
-	f.clearBtn = CreateFrame("Button", nil, f.sidebar, "UIPanelButtonTemplate")
-	f.clearBtn:SetSize(120, 20)
-	f.clearBtn:SetPoint("BOTTOM", 0, 6)
-	f.clearBtn:SetText("Clear")
-	f.clearBtn:SetScript("OnClick", function()
-		local db = _G[DB_NAME]
-		if IsShiftKeyDown() then
-			print("|cFF00FF00AzerothLM|r: Full database reset performed.")
-			if db then
-				db.chats = {}
-				table.insert(db.chats, { name = "General", messages = {} })
-				db.currentChatID = 1
-				f:RefreshTabs()
-				AzerothLM_UpdateTerminalDisplay()
-			end
-			return
-		end
-		if db and db.chats and db.currentChatID and db.chats[db.currentChatID] then
-			-- Only clear messages, preserving gear/quests/professions context
-			db.chats[db.currentChatID].messages = {}
-			table.insert(db.chats[db.currentChatID].messages, { sender = "System", text = "History cleared for this chat." })
-			AzerothLM_UpdateTerminalDisplay()
-		end
-	end)
+	-- Sidebar title
+	f.sidebarTitle = f.sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	f.sidebarTitle:SetPoint("TOP", 0, -8)
+	f.sidebarTitle:SetText("|cFFFFD100Topics|r")
 
-	-- Rename Box
-	f.renameBox = CreateFrame("EditBox", nil, f.sidebar, "InputBoxTemplate")
-	f.renameBox:SetPoint("TOPLEFT", 8, -5)
-	f.renameBox:SetSize(90, 20)
-	f.renameBox:SetAutoFocus(false)
-	f.renameBox:SetScript("OnEnterPressed", function(self)
-		local text = self:GetText()
-		local db = _G[DB_NAME]
-		if db and db.chats and db.currentChatID and db.chats[db.currentChatID] then
-			if not text or text == "" then
-				text = "New Chat"
-			end
-			db.chats[db.currentChatID].name = text
-			f:RefreshTabs()
-			self:SetText("")
-			self:ClearFocus()
-		end
-	end)
+	-- Topic header area (above scrolling content)
+	f.topicHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	f.topicHeader:SetPoint("TOPLEFT", f.sidebar, "TOPRIGHT", 10, -2)
+	f.topicHeader:SetPoint("RIGHT", f.refreshBtn, "LEFT", -10, 0)
+	f.topicHeader:SetJustifyH("LEFT")
+	f.topicHeader:SetText("")
 
-	-- Scrollable Chat History
-	f.history = CreateFrame("ScrollingMessageFrame", "AzerothLM_Terminal", f)
-	f.history:SetPoint("TOPLEFT", f.sidebar, "TOPRIGHT", 10, -28)
-	f.history:SetPoint("BOTTOMRIGHT", -20, 50)
+	f.topicMeta = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	f.topicMeta:SetPoint("TOPLEFT", f.topicHeader, "BOTTOMLEFT", 0, -2)
+	f.topicMeta:SetJustifyH("LEFT")
+	f.topicMeta:SetText("")
+
+	-- Scrolling Message Frame (main content)
+	f.history = CreateFrame("ScrollingMessageFrame", "AzerothLM_Journal", f)
+	f.history:SetPoint("TOPLEFT", f.sidebar, "TOPRIGHT", 10, -40)
+	f.history:SetPoint("BOTTOMRIGHT", -20, 16)
 	f.history:SetFontObject("ChatFontNormal")
 	f.history:SetJustifyH("LEFT")
 	f.history:SetFading(false)
 	f.history:SetMaxLines(1000)
 	f.history:SetInsertMode("BOTTOM")
-	f.history:AddMessage("Welcome to AzerothLM.")
+	f.history:AddMessage("Welcome to AzerothLM Research Journal.")
 
-	-- Input Box
-	f.input = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-	f.input:SetPoint("BOTTOMLEFT", f.sidebar, "BOTTOMRIGHT", 10, 8)
-	f.input:SetPoint("BOTTOMRIGHT", -20, 20)
-	f.input:SetHeight(20)
-	f.input:SetAutoFocus(false)
-	f.input:SetScript("OnEnterPressed", function(self)
-		local text = self:GetText()
-		if text and text ~= "" then
-			local db = _G[DB_NAME]
-			if db then
-				if AzerothLM_UpdatePlayerContext then
-					AzerothLM_UpdatePlayerContext(true)
-				end
-				db.query = text
-				db.status = "SENT"
-				db.response = nil
-				if f.status then f.status:SetText("Status: Thinking...") end
-				if db.currentChatID and db.chats[db.currentChatID] then
-					table.insert(db.chats[db.currentChatID].messages, { sender = "You", text = text })
-					table.insert(db.chats[db.currentChatID].messages, { sender = "System", text = "|cffffff00Message queued. Click Sync to send, then Sync again to load the response.|r" })
-				end
-				AzerothLM_UpdateTerminalDisplay()
-			end
-			self:SetText("")
-			self:ClearFocus()
-		end
-	end)
+	-- Topic sidebar buttons
+	f.topicButtons = {}
 
-	f.tabButtons = {}
-	
-	function f:RefreshTabs()
+	function f:RefreshTopics()
 		local db = _G[DB_NAME]
-		if not db or not db.chats then return end
+		if not db or not db.journal then return end
 
-		if f.renameBox and db.currentChatID and db.chats[db.currentChatID] then
-			f.renameBox:SetText(db.chats[db.currentChatID].name)
+		-- Hide existing buttons
+		for _, btn in pairs(self.topicButtons) do btn:Hide() end
+
+		-- Build sorted topic list (by updatedAt descending)
+		local sortedTopics = {}
+		for slug, topic in pairs(db.journal) do
+			table.insert(sortedTopics, {
+				slug = slug,
+				title = topic.title or slug,
+				updatedAt = topic.updatedAt or 0,
+				entryCount = topic.entries and #topic.entries or 0,
+			})
 		end
+		table.sort(sortedTopics, function(a, b) return a.updatedAt > b.updatedAt end)
 
-		-- Clear existing
-		for _, btn in pairs(f.tabButtons) do btn:Hide() end
-
-		-- New Chat Button
-		if not f.newChatBtn then
-			f.newChatBtn = CreateFrame("Button", nil, f.sidebar, "GameMenuButtonTemplate")
-			f.newChatBtn:SetText("+")
-			f.newChatBtn:SetSize(20, 20)
-			f.newChatBtn:SetPoint("TOPRIGHT", -5, -5)
-			f.newChatBtn:SetScript("OnClick", function()
-				table.insert(db.chats, { name = "Chat " .. (#db.chats + 1), messages = {} })
-				db.currentChatID = #db.chats
-				f:RefreshTabs()
-				AzerothLM_UpdateTerminalDisplay()
-			end)
-		end
-
-		local yOffset = -35
-		for i, chat in ipairs(db.chats) do
-			local btn = f.tabButtons[i]
+		local yOffset = -24
+		for i, info in ipairs(sortedTopics) do
+			local btn = self.topicButtons[i]
 			if not btn then
-				btn = CreateFrame("Button", nil, f.sidebar, "GameMenuButtonTemplate")
-				btn:SetSize(100, 20)
-				
-				btn.delBtn = CreateFrame("Button", nil, btn, "GameMenuButtonTemplate")
-				btn.delBtn:SetText("x")
-				btn.delBtn:SetSize(16, 16)
-				btn.delBtn:SetPoint("RIGHT", btn, "RIGHT", 2, 0)
-				btn.delBtn:SetScript("OnClick", function()
-					tremove(db.chats, i)
-					if db.currentChatID >= i and db.currentChatID > 1 then
-						db.currentChatID = db.currentChatID - 1
-					end
-					if #db.chats == 0 then
-						table.insert(db.chats, { name = "General", messages = {} })
-						db.currentChatID = 1
-					end
-					f:RefreshTabs()
-					AzerothLM_UpdateTerminalDisplay()
-				end)
-
-				btn:SetScript("OnClick", function()
-					db.currentChatID = i
-					f:RefreshTabs()
-					AzerothLM_UpdateTerminalDisplay()
-				end)
-				f.tabButtons[i] = btn
+				btn = CreateFrame("Button", nil, self.sidebar, "GameMenuButtonTemplate")
+				btn:SetSize(125, 20)
+				self.topicButtons[i] = btn
 			end
 
-			btn:SetPoint("TOP", f.sidebar, "TOP", -10, yOffset)
-			btn:SetText(chat.name)
-			btn:Show()
-			
-			if i == db.currentChatID then
+			btn:SetPoint("TOP", self.sidebar, "TOP", 0, yOffset)
+
+			-- Truncate title to fit button
+			local displayTitle = info.title
+			if #displayTitle > 16 then
+				displayTitle = string.sub(displayTitle, 1, 14) .. ".."
+			end
+			btn:SetText(displayTitle)
+
+			-- Highlight active topic
+			if db.currentTopicSlug == info.slug then
 				btn:LockHighlight()
 			else
 				btn:UnlockHighlight()
 			end
-			yOffset = yOffset - 25
+
+			-- Click handler
+			local capturedSlug = info.slug
+			btn:SetScript("OnClick", function()
+				db.currentTopicSlug = capturedSlug
+				AzerothLM_UpdateJournalDisplay()
+			end)
+
+			-- Tooltip for full title + entry count
+			btn:SetScript("OnEnter", function(self)
+				GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+				GameTooltip:SetText(info.title, 1, 1, 1)
+				GameTooltip:AddLine(string.format("%d entries", info.entryCount), 0.7, 0.7, 0.7)
+				GameTooltip:Show()
+			end)
+			btn:SetScript("OnLeave", function()
+				GameTooltip:Hide()
+			end)
+
+			btn:Show()
+			yOffset = yOffset - 22
+		end
+
+		-- "No topics" message
+		if #sortedTopics == 0 then
+			if not self.noTopicsLabel then
+				self.noTopicsLabel = self.sidebar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+				self.noTopicsLabel:SetPoint("CENTER", 0, 0)
+				self.noTopicsLabel:SetText("|cFF888888No topics yet|r")
+			end
+			self.noTopicsLabel:Show()
+		elseif self.noTopicsLabel then
+			self.noTopicsLabel:Hide()
 		end
 	end
 
+	-- Auto-select first topic on show
 	f:SetScript("OnShow", function()
-		f:RefreshTabs()
-		AzerothLM_UpdateTerminalDisplay()
-	end)
-
-	f:RegisterEvent("PLAYER_ENTERING_WORLD")
-	f:SetScript("OnEvent", function(self, event)
-		if event == "PLAYER_ENTERING_WORLD" then
-			AzerothLM_UpdateTerminalDisplay()
+		local db = _G[DB_NAME]
+		if db and db.journal and not db.currentTopicSlug then
+			local bestSlug, bestTime = nil, 0
+			for slug, topic in pairs(db.journal) do
+				if (topic.updatedAt or 0) > bestTime then
+					bestSlug = slug
+					bestTime = topic.updatedAt or 0
+				end
+			end
+			if bestSlug then
+				db.currentTopicSlug = bestSlug
+			end
 		end
-	end)
-
-	local timeSinceLastUpdate = 0
-	f:SetScript("OnUpdate", function(self, elapsed)
-		timeSinceLastUpdate = timeSinceLastUpdate + elapsed
-		if timeSinceLastUpdate >= 2 then
-			timeSinceLastUpdate = 0
-			AzerothLM_UpdateTerminalDisplay()
-		end
+		AzerothLM_UpdateJournalDisplay()
 	end)
 
 	f:Hide()
-end
-
-function AzerothLM_PrintResponse(response)
-	if not _G["AzerothLM_Frame"] then
-		CreateAzerothLMFrame()
-	end
-	local f = _G["AzerothLM_Frame"]
-	
-	local db = _G[DB_NAME]
-	if db and db.currentChatID and db.chats[db.currentChatID] then
-		table.insert(db.chats[db.currentChatID].messages, { sender = "AI", text = response })
-	end
-	
-	f:Show()
-	AzerothLM_UpdateTerminalDisplay()
 end
