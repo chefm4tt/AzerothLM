@@ -5,10 +5,15 @@ import time
 import random
 import json
 import hashlib
+import shlex
+import argparse
 import functools
 from dotenv import load_dotenv
 from litellm import completion
 from mcp.server.fastmcp import FastMCP
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 load_dotenv()
 PATH = os.path.normpath(os.getenv("WOW_SAVED_VARIABLES_PATH") or "")
@@ -31,6 +36,7 @@ JOURNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "j
 COOLDOWN_TIMER = 10
 LAST_CALL_TIME = 0
 MAX_RESPONSE_CHARS = 2000
+usage_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_hits": 0}
 
 SYSTEM_INSTRUCTION = (
     "You are a specialized AI assistant for World of Warcraft: The Burning Crusade Classic. "
@@ -266,26 +272,29 @@ def wait_for_file_ready(path):
 # -----------------------------------------------------------------------------
 # Context Reading
 # -----------------------------------------------------------------------------
-def read_game_context():
+def read_saved_variables_db():
+    """Read and parse the full AzerothLM_DB from SavedVariables."""
     if not os.path.exists(PATH):
-        return {}
+        return None
 
     wait_for_file_ready(PATH)
     try:
         with open(PATH, 'r', encoding='utf-8') as f:
             content = f.read()
     except Exception:
-        return {}
+        return None
 
     if "AzerothLM_DB" not in content:
-        return {}
+        return None
 
     try:
         parser = LuaParser(content)
-        db = parser.parse()
+        return parser.parse()
     except Exception:
-        return {}
+        return None
 
+def read_game_context():
+    db = read_saved_variables_db()
     if not db:
         return {}
 
@@ -331,6 +340,66 @@ def read_game_context():
     return context
 
 # -----------------------------------------------------------------------------
+# Pending Action Processing
+# -----------------------------------------------------------------------------
+def process_pending_actions():
+    """Read pendingActions from SavedVariables, apply to journal_state. Returns max processed timestamp."""
+    db = read_saved_variables_db()
+    if not db:
+        return 0
+
+    pending = db.get("pendingActions", {})
+    if not pending or not isinstance(pending, dict):
+        return 0
+
+    # LuaParser returns positional arrays as {1: val, 2: val, ...}
+    sorted_keys = sorted([k for k in pending.keys() if isinstance(k, int)])
+    if not sorted_keys:
+        return 0
+
+    state = load_journal_state()
+    max_timestamp = 0
+
+    for k in sorted_keys:
+        action_data = pending[k]
+        if not isinstance(action_data, dict):
+            continue
+
+        action = action_data.get("action", "")
+        slug = action_data.get("slug", "")
+        timestamp = action_data.get("timestamp", 0)
+
+        if timestamp > max_timestamp:
+            max_timestamp = timestamp
+
+        if action == "delete_topic" and slug in state["topics"]:
+            del state["topics"][slug]
+
+        elif action == "clear_entries" and slug in state["topics"]:
+            state["topics"][slug]["entries"] = []
+            state["topics"][slug]["updated_at"] = timestamp
+
+        elif action == "rename_topic" and slug in state["topics"]:
+            new_title = action_data.get("newTitle", "")
+            if new_title:
+                state["topics"][slug]["title"] = new_title
+                state["topics"][slug]["updated_at"] = timestamp
+
+        elif action == "delete_entry" and slug in state["topics"]:
+            entry_ts = action_data.get("entryTimestamp")
+            if entry_ts:
+                entries = state["topics"][slug].get("entries", [])
+                state["topics"][slug]["entries"] = [
+                    e for e in entries if e.get("timestamp") != entry_ts
+                ]
+                state["topics"][slug]["updated_at"] = timestamp
+
+    if max_timestamp > 0:
+        save_journal_state(state)
+
+    return max_timestamp
+
+# -----------------------------------------------------------------------------
 # AI Calling
 # -----------------------------------------------------------------------------
 def retry_with_backoff(max_retries=3, base_delay=1):
@@ -354,6 +423,10 @@ def retry_with_backoff(max_retries=3, base_delay=1):
 @retry_with_backoff(max_retries=3)
 def _execute_completion(messages):
     response = completion(model=MODEL_NAME, messages=messages)
+    usage_stats["calls"] += 1
+    if hasattr(response, "usage") and response.usage:
+        usage_stats["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
+        usage_stats["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
     return response.choices[0].message.content or ""
 
 def testing_call_ai(user_query, game_context, topic_title):
@@ -382,6 +455,7 @@ def call_ai(user_query, game_context, topic_title, history=None):
     cache_key = get_cache_key(MODEL_NAME, user_query, game_context)
     cache = load_cache()
     if cache_key in cache:
+        usage_stats["cached_hits"] += 1
         return cache[cache_key]
 
     # Build multi-turn messages
@@ -411,12 +485,14 @@ def call_ai(user_query, game_context, topic_title, history=None):
 # -----------------------------------------------------------------------------
 # Signal File Writing
 # -----------------------------------------------------------------------------
-def write_signal_file(state):
+def write_signal_file(state, ack_timestamp=None):
     topics = state.get("topics", {})
-    if not topics:
-        return
 
     signal_data = {}
+
+    if ack_timestamp:
+        signal_data["_ack"] = {"processedUpTo": ack_timestamp}
+
     for slug, topic in topics.items():
         signal_data[slug] = {
             "title": topic["title"],
@@ -433,6 +509,12 @@ def write_signal_file(state):
             ],
         }
 
+    if not signal_data:
+        wait_for_file_ready(SIGNAL_PATH)
+        with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
+            f.write('AzerothLM_Signal = nil\n')
+        return
+
     try:
         lua_table = to_lua(signal_data)
     except Exception as e:
@@ -442,6 +524,12 @@ def write_signal_file(state):
     with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
         f.write(f'AzerothLM_Signal = {lua_table}\n')
 
+def sync_pending_and_write_signal():
+    """Process any pending in-game actions, then rewrite the signal file with ack."""
+    max_ts = process_pending_actions()
+    state = load_journal_state()
+    write_signal_file(state, ack_timestamp=max_ts if max_ts > 0 else None)
+
 # -----------------------------------------------------------------------------
 # MCP Server
 # -----------------------------------------------------------------------------
@@ -450,6 +538,7 @@ mcp = FastMCP("AzerothLM Research Relay")
 @mcp.tool()
 def create_topic(title: str) -> str:
     """Create a new research topic for the WoW journal. Returns the topic slug."""
+    sync_pending_and_write_signal()
     slug = slugify(title)
     if not slug:
         return "Error: Could not generate a valid slug from the title."
@@ -473,6 +562,7 @@ def create_topic(title: str) -> str:
 def ask_question(topic_slug: str, question: str) -> str:
     """Ask a question on a research topic. Reads character context from WoW SavedVariables,
     calls the AI with full topic history for multi-turn context, auto-delivers to signal file."""
+    sync_pending_and_write_signal()
     state = load_journal_state()
 
     if topic_slug not in state["topics"]:
@@ -516,6 +606,7 @@ def ask_question(topic_slug: str, question: str) -> str:
 @mcp.tool()
 def list_topics() -> str:
     """List all research topics with metadata."""
+    sync_pending_and_write_signal()
     state = load_journal_state()
     topics = state.get("topics", {})
 
@@ -535,6 +626,7 @@ def list_topics() -> str:
 @mcp.tool()
 def get_topic(topic_slug: str) -> str:
     """Get the full Q&A history for a research topic."""
+    sync_pending_and_write_signal()
     state = load_journal_state()
 
     if topic_slug not in state["topics"]:
@@ -562,6 +654,7 @@ def get_topic(topic_slug: str) -> str:
 @mcp.tool()
 def get_character_context() -> str:
     """Read and decode current character context (gear, professions, quests) from WoW SavedVariables."""
+    sync_pending_and_write_signal()
     context = read_game_context()
     if not context:
         return "No character context available. The SavedVariables file may not exist yet (requires at least one /reload or logout in-game)."
@@ -570,6 +663,7 @@ def get_character_context() -> str:
 @mcp.tool()
 def delete_topic(topic_slug: str) -> str:
     """Delete a research topic from the journal."""
+    sync_pending_and_write_signal()
     state = load_journal_state()
 
     if topic_slug not in state["topics"]:
@@ -592,7 +686,255 @@ def delete_topic(topic_slug: str) -> str:
     return f"Deleted topic '{title}' (slug: {topic_slug})"
 
 # -----------------------------------------------------------------------------
+# Interactive CLI
+# -----------------------------------------------------------------------------
+def run_cli():
+    console = Console()
+
+    # Startup banner
+    config_table = Table(show_header=False, box=None, padding=(0, 2))
+    config_table.add_column(style="bold cyan")
+    config_table.add_column()
+    config_table.add_row("Model", MODEL_NAME)
+    config_table.add_row("SavedVariables", PATH)
+    config_table.add_row("Addon Path", ADDON_PATH)
+    config_table.add_row("Testing Mode", "ON" if TESTING_MODE else "off")
+    console.print(Panel(config_table, title="[bold]AzerothLM Research Relay[/bold]", border_style="green"))
+    console.print("[dim]Type /help for commands. Type /quit to exit.[/dim]\n")
+
+    # Sync pending actions on startup
+    try:
+        sync_pending_and_write_signal()
+    except Exception:
+        pass
+
+    while True:
+        try:
+            raw = console.input("[bold cyan]>[/bold cyan] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Goodbye.[/dim]")
+            break
+
+        if not raw:
+            continue
+
+        # Parse command and args
+        if raw.startswith("/"):
+            parts = raw.split(None, 1)
+            cmd = parts[0].lower()
+            rest = parts[1] if len(parts) > 1 else ""
+        else:
+            # Bare text without slash — treat as unknown
+            console.print("[yellow]Unknown input. Type /help for commands.[/yellow]")
+            continue
+
+        # -- /help --------------------------------------------------------
+        if cmd == "/help":
+            help_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+            help_table.add_column("Command", style="cyan")
+            help_table.add_column("Description")
+            help_table.add_row("/new <title>", "Create a new research topic")
+            help_table.add_row("/ask <slug> <question>", "Ask a question on a topic")
+            help_table.add_row("/topics", "List all topics")
+            help_table.add_row("/view <slug>", "View full Q&A history for a topic")
+            help_table.add_row("/delete <slug>", "Delete a topic")
+            help_table.add_row("/context", "Show character context (gear, professions, quests)")
+            help_table.add_row("/usage", "Show API usage stats for this session")
+            help_table.add_row("/status", "Show relay configuration")
+            help_table.add_row("/quit", "Exit the relay")
+            console.print(help_table)
+
+        # -- /quit --------------------------------------------------------
+        elif cmd in ("/quit", "/exit", "/q"):
+            console.print("[dim]Goodbye.[/dim]")
+            break
+
+        # -- /new <title> -------------------------------------------------
+        elif cmd == "/new":
+            if not rest:
+                console.print("[yellow]Usage: /new <title>[/yellow]")
+                continue
+            title = rest.strip('"').strip("'")
+            slug = slugify(title)
+            if not slug:
+                console.print("[red]Could not generate a valid slug from that title.[/red]")
+                continue
+            state = load_journal_state()
+            if slug in state["topics"]:
+                console.print(f"[yellow]Topic '{slug}' already exists.[/yellow]")
+                continue
+            now = int(time.time())
+            state["topics"][slug] = {
+                "title": title, "model": MODEL_NAME,
+                "created_at": now, "updated_at": now, "entries": [],
+            }
+            save_journal_state(state)
+            try:
+                write_signal_file(state)
+            except Exception:
+                pass
+            console.print(f"[green]Created topic:[/green] {title} [dim](slug: {slug})[/dim]")
+
+        # -- /ask <slug> <question> ---------------------------------------
+        elif cmd == "/ask":
+            try:
+                tokens = shlex.split(rest)
+            except ValueError:
+                tokens = rest.split(None, 1)
+            if len(tokens) < 2:
+                console.print("[yellow]Usage: /ask <slug> <question>[/yellow]")
+                continue
+            slug = tokens[0]
+            question = " ".join(tokens[1:])
+
+            sync_pending_and_write_signal()
+            state = load_journal_state()
+            if slug not in state["topics"]:
+                console.print(f"[red]Topic '{slug}' not found. Use /topics to see available slugs.[/red]")
+                continue
+
+            topic = state["topics"][slug]
+            console.print(f"[dim]Asking on '{topic['title']}'...[/dim]")
+
+            context = read_game_context()
+            context_str = str(context)
+            history = topic.get("entries", [])
+            ai_response = call_ai(question, context_str, topic["title"], history)
+            display_response = truncate_response(ai_response)
+
+            now = int(time.time())
+            entry = {
+                "question": question, "answer": display_response, "timestamp": now,
+                "full_answer": ai_response if ai_response != display_response else None,
+            }
+            topic["entries"].append(entry)
+            topic["updated_at"] = now
+            topic["model"] = MODEL_NAME
+            save_journal_state(state)
+
+            try:
+                write_signal_file(state)
+            except Exception as e:
+                console.print(f"[red]Signal write failed: {e}[/red]")
+
+            console.print(Panel(display_response, title=f"[bold]Q: {question}[/bold]", border_style="green"))
+            console.print("[dim]Signal file updated. /reload in-game to view.[/dim]")
+
+        # -- /topics ------------------------------------------------------
+        elif cmd == "/topics":
+            sync_pending_and_write_signal()
+            state = load_journal_state()
+            topics = state.get("topics", {})
+            if not topics:
+                console.print("[yellow]No topics yet. Use /new to create one.[/yellow]")
+                continue
+            table = Table(title="Research Topics", show_lines=False)
+            table.add_column("Slug", style="cyan")
+            table.add_column("Title")
+            table.add_column("Entries", justify="right")
+            table.add_column("Model", style="dim")
+            table.add_column("Updated", style="dim")
+            for slug, t in sorted(topics.items(), key=lambda x: x[1].get("updated_at", 0), reverse=True):
+                count = len(t.get("entries", []))
+                updated = time.strftime("%Y-%m-%d %H:%M", time.localtime(t.get("updated_at", 0)))
+                table.add_row(slug, t["title"], str(count), t.get("model", "?"), updated)
+            console.print(table)
+
+        # -- /view <slug> -------------------------------------------------
+        elif cmd == "/view":
+            slug = rest.strip()
+            if not slug:
+                console.print("[yellow]Usage: /view <slug>[/yellow]")
+                continue
+            state = load_journal_state()
+            if slug not in state["topics"]:
+                console.print(f"[red]Topic '{slug}' not found.[/red]")
+                continue
+            topic = state["topics"][slug]
+            console.print(f"\n[bold yellow]{topic['title']}[/bold yellow]")
+            console.print(f"[dim]Model: {topic.get('model', '?')} | Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(topic.get('created_at', 0)))}[/dim]\n")
+            entries = topic.get("entries", [])
+            if not entries:
+                console.print("[dim]No entries yet.[/dim]")
+                continue
+            for i, entry in enumerate(entries, 1):
+                ts = time.strftime("%H:%M", time.localtime(entry.get("timestamp", 0)))
+                console.print(f"[bold cyan]Q{i}[/bold cyan] [{ts}]: {entry['question']}")
+                answer = entry.get("full_answer") or entry["answer"]
+                console.print(f"[green]{answer}[/green]\n")
+
+        # -- /delete <slug> -----------------------------------------------
+        elif cmd == "/delete":
+            slug = rest.strip()
+            if not slug:
+                console.print("[yellow]Usage: /delete <slug>[/yellow]")
+                continue
+            state = load_journal_state()
+            if slug not in state["topics"]:
+                console.print(f"[red]Topic '{slug}' not found.[/red]")
+                continue
+            title = state["topics"][slug]["title"]
+            del state["topics"][slug]
+            save_journal_state(state)
+            try:
+                if state["topics"]:
+                    write_signal_file(state)
+                elif os.path.exists(SIGNAL_PATH):
+                    with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
+                        f.write('AzerothLM_Signal = nil\n')
+            except Exception:
+                pass
+            console.print(f"[green]Deleted topic:[/green] {title} [dim](slug: {slug})[/dim]")
+
+        # -- /context -----------------------------------------------------
+        elif cmd == "/context":
+            context = read_game_context()
+            if not context:
+                console.print("[yellow]No character context available. Log in and /reload in-game first.[/yellow]")
+                continue
+            console.print(Panel(json.dumps(context, indent=2, ensure_ascii=False), title="Character Context", border_style="blue"))
+
+        # -- /usage -------------------------------------------------------
+        elif cmd == "/usage":
+            table = Table(title="API Usage (this session)", show_lines=False)
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", justify="right")
+            table.add_row("Model", MODEL_NAME)
+            table.add_row("API Calls", str(usage_stats["calls"]))
+            table.add_row("Prompt Tokens", str(usage_stats["prompt_tokens"]))
+            table.add_row("Completion Tokens", str(usage_stats["completion_tokens"]))
+            total = usage_stats["prompt_tokens"] + usage_stats["completion_tokens"]
+            table.add_row("Total Tokens", str(total))
+            table.add_row("Cache Hits", str(usage_stats["cached_hits"]))
+            console.print(table)
+
+        # -- /status ------------------------------------------------------
+        elif cmd == "/status":
+            sv_exists = os.path.exists(PATH)
+            signal_exists = os.path.exists(SIGNAL_PATH)
+            state = load_journal_state()
+            topic_count = len(state.get("topics", {}))
+            table = Table(show_header=False, box=None, padding=(0, 2))
+            table.add_column(style="bold cyan")
+            table.add_column()
+            table.add_row("Model", MODEL_NAME)
+            table.add_row("Testing Mode", "ON" if TESTING_MODE else "off")
+            table.add_row("SavedVariables", f"{'found' if sv_exists else 'NOT FOUND'}")
+            table.add_row("Signal File", f"{'exists' if signal_exists else 'not yet created'}")
+            table.add_row("Topics", str(topic_count))
+            console.print(Panel(table, title="Relay Status", border_style="blue"))
+
+        else:
+            console.print(f"[yellow]Unknown command: {cmd}. Type /help for commands.[/yellow]")
+
+# -----------------------------------------------------------------------------
 # Entry Point
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    mcp.run()
+    parser = argparse.ArgumentParser(description="AzerothLM Research Relay")
+    parser.add_argument("--mcp", action="store_true", help="Run as MCP server (for Claude Code)")
+    args = parser.parse_args()
+    if args.mcp:
+        mcp.run()
+    else:
+        run_cli()

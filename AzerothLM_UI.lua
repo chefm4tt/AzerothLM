@@ -15,6 +15,76 @@ local function HexToText(hex)
 end
 
 -- ----------------------------------------------------------------------------
+-- Context Menu & Popup Dialogs
+-- ----------------------------------------------------------------------------
+local contextMenuFrame = CreateFrame("Frame", "AzerothLM_ContextMenu", UIParent, "UIDropDownMenuTemplate")
+
+StaticPopupDialogs["AZEROTHLM_DELETE_TOPIC"] = {
+	text = "Delete topic \"%s\"?\n\nThis will remove the topic and all its entries.\nClick Refresh to sync the change.",
+	button1 = "Delete",
+	button2 = "Cancel",
+	OnAccept = function(self, slug)
+		ns.QueueAction({ action = "delete_topic", slug = slug })
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+StaticPopupDialogs["AZEROTHLM_CLEAR_ENTRIES"] = {
+	text = "Clear all entries from \"%s\"?\n\nThe topic will remain but all Q&A will be removed.",
+	button1 = "Clear",
+	button2 = "Cancel",
+	OnAccept = function(self, slug)
+		ns.QueueAction({ action = "clear_entries", slug = slug })
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+StaticPopupDialogs["AZEROTHLM_RENAME_TOPIC"] = {
+	text = "Rename topic:",
+	button1 = ACCEPT,
+	button2 = CANCEL,
+	hasEditBox = true,
+	editBoxWidth = 200,
+	maxLetters = 64,
+	OnShow = function(self, data)
+		self.editBox:SetText(data.currentTitle or "")
+		self.editBox:HighlightText()
+		self.editBox:SetFocus()
+	end,
+	OnAccept = function(self, data)
+		local newTitle = strtrim(self.editBox:GetText())
+		if newTitle ~= "" then
+			ns.QueueAction({ action = "rename_topic", slug = data.slug, newTitle = newTitle })
+		end
+	end,
+	EditBoxOnEnterPressed = function(self)
+		self:GetParent().button1:Click()
+	end,
+	EditBoxOnEscapePressed = function(self)
+		self:GetParent():Hide()
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+StaticPopupDialogs["AZEROTHLM_DELETE_ENTRY"] = {
+	text = "Delete entry Q%d from \"%s\"?",
+	button1 = "Delete",
+	button2 = "Cancel",
+	OnAccept = function(self, data)
+		ns.QueueAction({ action = "delete_entry", slug = data.slug, entryTimestamp = data.entryTimestamp })
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+}
+
+-- ----------------------------------------------------------------------------
 -- Journal Display
 -- ----------------------------------------------------------------------------
 function AzerothLM_UpdateJournalDisplay()
@@ -27,6 +97,16 @@ function AzerothLM_UpdateJournalDisplay()
 	-- Update sidebar topic list
 	if f.RefreshTopics then
 		f:RefreshTopics()
+	end
+
+	-- Update Refresh button to show pending action count
+	if f.refreshBtn then
+		local pendingCount = db.pendingActions and #db.pendingActions or 0
+		if pendingCount > 0 then
+			f.refreshBtn:SetText(string.format("Sync (%d)", pendingCount))
+		else
+			f.refreshBtn:SetText("Refresh")
+		end
 	end
 
 	-- Clear the main content area
@@ -210,8 +290,14 @@ function CreateAzerothLMFrame()
 		for i, info in ipairs(sortedTopics) do
 			local btn = self.topicButtons[i]
 			if not btn then
-				btn = CreateFrame("Button", nil, self.sidebar, "GameMenuButtonTemplate")
+				btn = CreateFrame("Button", nil, self.sidebar)
 				btn:SetSize(125, 20)
+				btn:SetNormalFontObject("GameFontNormalSmall")
+				btn:SetHighlightFontObject("GameFontHighlightSmall")
+				local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
+				highlight:SetAllPoints()
+				highlight:SetColorTexture(1, 1, 1, 0.15)
+				btn:SetHighlightTexture(highlight)
 				self.topicButtons[i] = btn
 			end
 
@@ -231,18 +317,75 @@ function CreateAzerothLMFrame()
 				btn:UnlockHighlight()
 			end
 
-			-- Click handler
+			-- Click handler (left = select, right = context menu)
 			local capturedSlug = info.slug
-			btn:SetScript("OnClick", function()
-				db.currentTopicSlug = capturedSlug
-				AzerothLM_UpdateJournalDisplay()
+			local capturedTitle = info.title
+			btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+			btn:SetScript("OnClick", function(self, button)
+				if button == "RightButton" then
+					local menuList = {
+						{ text = capturedTitle, isTitle = true, notCheckable = true },
+						{
+							text = "Rename Topic",
+							notCheckable = true,
+							func = function()
+								local dialog = StaticPopup_Show("AZEROTHLM_RENAME_TOPIC")
+								if dialog then
+									dialog.data = { slug = capturedSlug, currentTitle = capturedTitle }
+								end
+							end,
+						},
+						{
+							text = "Clear All Entries",
+							notCheckable = true,
+							func = function()
+								local dialog = StaticPopup_Show("AZEROTHLM_CLEAR_ENTRIES", capturedTitle)
+								if dialog then
+									dialog.data = capturedSlug
+								end
+							end,
+						},
+						{
+							text = "Delete Last Entry",
+							notCheckable = true,
+							func = function()
+								local curDb = _G[DB_NAME]
+								local topic = curDb and curDb.journal and curDb.journal[capturedSlug]
+								if topic and topic.entries and #topic.entries > 0 then
+									local lastEntry = topic.entries[#topic.entries]
+									local dialog = StaticPopup_Show("AZEROTHLM_DELETE_ENTRY", #topic.entries, capturedTitle)
+									if dialog then
+										dialog.data = { slug = capturedSlug, entryTimestamp = lastEntry.timestamp }
+									end
+								else
+									print("|cFF00FF00AzerothLM|r: No entries to delete.")
+								end
+							end,
+						},
+						{
+							text = "|cFFFF4444Delete Topic|r",
+							notCheckable = true,
+							func = function()
+								local dialog = StaticPopup_Show("AZEROTHLM_DELETE_TOPIC", capturedTitle)
+								if dialog then
+									dialog.data = capturedSlug
+								end
+							end,
+						},
+						{ text = "Cancel", notCheckable = true },
+					}
+					EasyMenu(menuList, contextMenuFrame, "cursor", 0, 0, "MENU")
+				else
+					db.currentTopicSlug = capturedSlug
+					AzerothLM_UpdateJournalDisplay()
+				end
 			end)
 
 			-- Tooltip for full title + entry count
 			btn:SetScript("OnEnter", function(self)
 				GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-				GameTooltip:SetText(info.title, 1, 1, 1)
-				GameTooltip:AddLine(string.format("%d entries", info.entryCount), 0.7, 0.7, 0.7)
+				GameTooltip:SetText(capturedTitle, 1, 1, 1)
+				GameTooltip:AddLine(string.format("%d entries | Right-click for options", info.entryCount), 0.7, 0.7, 0.7)
 				GameTooltip:Show()
 			end)
 			btn:SetScript("OnLeave", function()
