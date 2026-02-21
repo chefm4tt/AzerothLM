@@ -8,7 +8,7 @@ import hashlib
 import shlex
 import argparse
 import functools
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from litellm import completion
 from mcp.server.fastmcp import FastMCP
 from rich.console import Console
@@ -37,6 +37,34 @@ COOLDOWN_TIMER = 10
 LAST_CALL_TIME = 0
 MAX_RESPONSE_CHARS = 2000
 usage_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_hits": 0}
+
+PLACEHOLDER_PATTERN = re.compile(r"^YOUR_.*_HERE$|^$")
+PROVIDERS = {
+    "gemini": {
+        "key_env": "GEMINI_API_KEY",
+        "display": "Google Gemini",
+        "key_url": "https://aistudio.google.com/",
+        "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"],
+    },
+    "openai": {
+        "key_env": "OPENAI_API_KEY",
+        "display": "OpenAI",
+        "key_url": "https://platform.openai.com/api-keys",
+        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini"],
+    },
+    "anthropic": {
+        "key_env": "ANTHROPIC_API_KEY",
+        "display": "Anthropic",
+        "key_url": "https://console.anthropic.com/",
+        "models": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"],
+    },
+    "ollama": {
+        "key_env": None,
+        "display": "Ollama (Local)",
+        "key_url": "https://ollama.com/download",
+        "models": ["llama3", "mistral", "codellama"],
+    },
+}
 
 SYSTEM_INSTRUCTION = (
     "You are a specialized AI assistant for World of Warcraft: The Burning Crusade Classic. "
@@ -237,6 +265,28 @@ def truncate_response(text):
     return truncated.rstrip() + "\n\n[Response trimmed for in-game display]"
 
 # -----------------------------------------------------------------------------
+# Provider Management
+# -----------------------------------------------------------------------------
+def get_env_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+def get_configured_providers():
+    configured = {}
+    for key, info in PROVIDERS.items():
+        if info["key_env"] is None:
+            configured[key] = info
+            continue
+        val = os.getenv(info["key_env"], "")
+        if val and not PLACEHOLDER_PATTERN.match(val):
+            configured[key] = info
+    return configured
+
+def persist_env_value(key, value):
+    env_path = get_env_path()
+    set_key(env_path, key, value, quote_mode="never")
+    os.environ[key] = value
+
+# -----------------------------------------------------------------------------
 # Journal State Persistence
 # -----------------------------------------------------------------------------
 def load_journal_state():
@@ -431,11 +481,11 @@ def _execute_completion(messages):
 
 def testing_call_ai(user_query, game_context, topic_title):
     responses = [
-        "Analyzing your gear... You should prioritize upgrading your weapon in Karazhan.",
-        "Based on your professions, you should focus on transmuting Primal Might.",
-        "Your quest log indicates you are in Nagrand. Have you completed the Ring of Blood?",
-        "Detected 306 Skinning... you should head to Nagrand to farm Clefthoof leather.",
-        "Mock Response: The Legion holds no sway here.",
+        "[TEST MODE] Analyzing your gear... You should prioritize upgrading your weapon in Karazhan.",
+        "[TEST MODE] Based on your professions, you should focus on transmuting Primal Might.",
+        "[TEST MODE] Your quest log indicates you are in Nagrand. Have you completed the Ring of Blood?",
+        "[TEST MODE] Detected 306 Skinning... you should head to Nagrand to farm Clefthoof leather.",
+        "[TEST MODE] Mock Response: The Legion holds no sway here.",
     ]
     time.sleep(0.5)
     return random.choice(responses)
@@ -686,20 +736,261 @@ def delete_topic(topic_slug: str) -> str:
     return f"Deleted topic '{title}' (slug: {topic_slug})"
 
 # -----------------------------------------------------------------------------
+# Interactive CLI — Command Handlers
+# -----------------------------------------------------------------------------
+def handle_model_list(console):
+    configured = get_configured_providers()
+    active_provider = MODEL_NAME.split("/")[0] if "/" in MODEL_NAME else ""
+    active_model = MODEL_NAME.split("/", 1)[1] if "/" in MODEL_NAME else MODEL_NAME
+
+    table = Table(title="AI Providers & Models", show_lines=True)
+    table.add_column("Provider", style="bold")
+    table.add_column("Status")
+    table.add_column("Models")
+
+    for pkey, pinfo in PROVIDERS.items():
+        if pkey in configured:
+            status = "[green]Ready[/green]"
+        else:
+            status = "[dim]Not configured[/dim]"
+
+        model_strs = []
+        for m in pinfo["models"]:
+            if pkey == active_provider and m == active_model:
+                model_strs.append(f"[bold cyan]{m} (active)[/bold cyan]")
+            else:
+                model_strs.append(m)
+        table.add_row(pinfo["display"], status, ", ".join(model_strs))
+
+    console.print(table)
+    console.print(f"\n[dim]Active model: {MODEL_NAME}[/dim]")
+
+def handle_model_add(console):
+    configured = get_configured_providers()
+    unconfigured = {
+        k: v for k, v in PROVIDERS.items()
+        if v["key_env"] is not None and k not in configured
+    }
+
+    if not unconfigured:
+        console.print("[green]All providers are already configured![/green]")
+        handle_model_list(console)
+        return
+
+    console.print("\n[bold]Add API Key[/bold]\n")
+    options = list(unconfigured.items())
+    for i, (pkey, pinfo) in enumerate(options, 1):
+        console.print(f"  [cyan]{i}[/cyan]. {pinfo['display']}  [dim]({pinfo['key_url']})[/dim]")
+    console.print(f"  [dim]0. Cancel[/dim]\n")
+
+    try:
+        choice = console.input("[bold]Select provider:[/bold] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not choice or choice == "0":
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    try:
+        idx = int(choice) - 1
+        if idx < 0 or idx >= len(options):
+            raise ValueError
+    except ValueError:
+        console.print("[red]Invalid selection.[/red]")
+        return
+
+    pkey, pinfo = options[idx]
+    console.print(f"\nGet your API key from: [link={pinfo['key_url']}]{pinfo['key_url']}[/link]")
+
+    try:
+        api_key = console.input(f"[bold]Paste {pinfo['display']} API key:[/bold] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not api_key:
+        console.print("[dim]Cancelled (empty key).[/dim]")
+        return
+
+    persist_env_value(pinfo["key_env"], api_key)
+    console.print(f"[green]Saved {pinfo['key_env']} to .env[/green]")
+    console.print(f"[dim]Use /model switch to switch to a {pinfo['display']} model.[/dim]")
+
+def handle_model_switch(console):
+    global MODEL_NAME
+    configured = get_configured_providers()
+
+    if not configured:
+        console.print("[yellow]No providers configured. Use /model add first.[/yellow]")
+        return
+
+    console.print("\n[bold]Switch Model[/bold]\n")
+    options = list(configured.items())
+    for i, (pkey, pinfo) in enumerate(options, 1):
+        console.print(f"  [cyan]{i}[/cyan]. {pinfo['display']}")
+    console.print(f"  [dim]0. Cancel[/dim]\n")
+
+    try:
+        choice = console.input("[bold]Select provider:[/bold] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not choice or choice == "0":
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    try:
+        idx = int(choice) - 1
+        if idx < 0 or idx >= len(options):
+            raise ValueError
+    except ValueError:
+        console.print("[red]Invalid selection.[/red]")
+        return
+
+    pkey, pinfo = options[idx]
+    models = pinfo["models"]
+    active_provider = MODEL_NAME.split("/")[0] if "/" in MODEL_NAME else ""
+    active_model = MODEL_NAME.split("/", 1)[1] if "/" in MODEL_NAME else ""
+
+    console.print(f"\n[bold]{pinfo['display']} Models[/bold]\n")
+    for i, m in enumerate(models, 1):
+        marker = " [cyan](active)[/cyan]" if pkey == active_provider and m == active_model else ""
+        console.print(f"  [cyan]{i}[/cyan]. {m}{marker}")
+    console.print(f"  [dim]0. Cancel[/dim]\n")
+
+    try:
+        choice = console.input("[bold]Select model:[/bold] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not choice or choice == "0":
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    try:
+        midx = int(choice) - 1
+        if midx < 0 or midx >= len(models):
+            raise ValueError
+    except ValueError:
+        console.print("[red]Invalid selection.[/red]")
+        return
+
+    new_model = f"{pkey}/{models[midx]}"
+    MODEL_NAME = new_model
+    persist_env_value("MODEL_NAME", new_model)
+    console.print(f"\n[green]Switched to:[/green] [bold]{new_model}[/bold]")
+    console.print("[dim]Choice saved to .env. Future sessions will use this model.[/dim]")
+
+def run_config_check(console):
+    configured = get_configured_providers()
+    active_provider = MODEL_NAME.split("/")[0] if "/" in MODEL_NAME else ""
+
+    checks = []
+
+    # Check 1: .env exists and writable
+    env_path = get_env_path()
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, 'a'):
+                pass
+            checks.append(("[green]PASS[/green]", f".env file exists and is writable"))
+        except (IOError, PermissionError):
+            checks.append(("[red]FAIL[/red]", f".env file exists but is not writable"))
+    else:
+        checks.append(("[red]FAIL[/red]", f".env file not found at {env_path}"))
+
+    # Check 2: Active provider has key
+    if active_provider in configured:
+        checks.append(("[green]PASS[/green]", f"Active provider '{active_provider}' has API key configured"))
+    elif active_provider:
+        checks.append(("[red]FAIL[/red]", f"Active provider '{active_provider}' has no API key — /model add or /model switch"))
+    else:
+        checks.append(("[yellow]WARN[/yellow]", f"Could not determine provider from MODEL_NAME '{MODEL_NAME}'"))
+
+    # Check 3: Configured providers count
+    keyed = {k: v for k, v in configured.items() if v["key_env"] is not None}
+    if keyed:
+        names = ", ".join(v["display"] for v in keyed.values())
+        checks.append(("[green]PASS[/green]", f"API keys configured: {names}"))
+    else:
+        checks.append(("[red]FAIL[/red]", "No API keys configured — use /model add"))
+
+    # Check 4: SavedVariables path
+    if os.path.exists(PATH):
+        checks.append(("[green]PASS[/green]", "SavedVariables file found"))
+    else:
+        checks.append(("[yellow]WARN[/yellow]", "SavedVariables file not found (log in and /reload in-game)"))
+
+    # Check 5: Addon path writable
+    if os.path.isdir(ADDON_PATH):
+        checks.append(("[green]PASS[/green]", "Addon path exists"))
+    else:
+        checks.append(("[red]FAIL[/red]", f"Addon path not found: {ADDON_PATH}"))
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="bold", width=8)
+    table.add_column()
+    for status, msg in checks:
+        table.add_row(status, msg)
+    console.print(Panel(table, title="Configuration Check", border_style="blue"))
+
+def handle_test(console, rest):
+    global TESTING_MODE
+    subcmd = rest.strip().lower()
+
+    if subcmd == "on":
+        TESTING_MODE = True
+        persist_env_value("TESTING_MODE", "true")
+        console.print("[yellow]Test mode enabled.[/yellow] API calls will return mock responses prefixed with [TEST MODE].")
+        run_config_check(console)
+    elif subcmd == "off":
+        TESTING_MODE = False
+        persist_env_value("TESTING_MODE", "false")
+        console.print("[green]Test mode disabled.[/green] API calls will use the live model.")
+    else:
+        status = "[yellow]ON[/yellow]" if TESTING_MODE else "[green]off[/green]"
+        console.print(f"Test mode: {status}")
+        console.print("[dim]Usage: /test on | /test off[/dim]")
+
+# -----------------------------------------------------------------------------
 # Interactive CLI
 # -----------------------------------------------------------------------------
 def run_cli():
     console = Console()
 
     # Startup banner
+    configured = get_configured_providers()
     config_table = Table(show_header=False, box=None, padding=(0, 2))
     config_table.add_column(style="bold cyan")
     config_table.add_column()
-    config_table.add_row("Model", MODEL_NAME)
+    config_table.add_row("Active Model", MODEL_NAME)
+    if configured:
+        provider_names = ", ".join(info["display"] for info in configured.values())
+        config_table.add_row("Providers", provider_names)
+    else:
+        config_table.add_row("Providers", "[red]None configured![/red]")
     config_table.add_row("SavedVariables", PATH)
     config_table.add_row("Addon Path", ADDON_PATH)
-    config_table.add_row("Testing Mode", "ON" if TESTING_MODE else "off")
+    if TESTING_MODE:
+        config_table.add_row("Testing Mode", "[bold yellow]ON[/bold yellow]")
+    else:
+        config_table.add_row("Testing Mode", "off")
     console.print(Panel(config_table, title="[bold]AzerothLM Research Relay[/bold]", border_style="green"))
+
+    if not configured:
+        console.print(Panel(
+            "[bold yellow]No API providers configured.[/bold yellow]\n\n"
+            "To get started, either:\n"
+            "  1. Run [cyan]/model add[/cyan] to set up a provider interactively\n"
+            "  2. Edit your [cyan].env[/cyan] file directly and add an API key\n\n"
+            "Supported providers: " + ", ".join(p["display"] for p in PROVIDERS.values()),
+            title="Setup Required",
+            border_style="yellow",
+        ))
+    else:
+        active_provider = MODEL_NAME.split("/")[0] if "/" in MODEL_NAME else ""
+        if active_provider and active_provider not in configured:
+            console.print(
+                f"[yellow]Warning: Active model '{MODEL_NAME}' uses provider '{active_provider}' "
+                f"which has no API key configured. Use /model switch to change.[/yellow]\n"
+            )
+
     console.print("[dim]Type /help for commands. Type /quit to exit.[/dim]\n")
 
     # Sync pending actions on startup
@@ -738,6 +1029,10 @@ def run_cli():
             help_table.add_row("/topics", "List all topics")
             help_table.add_row("/view <slug>", "View full Q&A history for a topic")
             help_table.add_row("/delete <slug>", "Delete a topic")
+            help_table.add_row("/model", "Show providers and models")
+            help_table.add_row("/model add", "Add a new provider API key")
+            help_table.add_row("/model switch", "Switch to a different model")
+            help_table.add_row("/test on|off", "Toggle test mode (mock responses)")
             help_table.add_row("/context", "Show character context (gear, professions, quests)")
             help_table.add_row("/usage", "Show API usage stats for this session")
             help_table.add_row("/status", "Show relay configuration")
@@ -912,17 +1207,36 @@ def run_cli():
         elif cmd == "/status":
             sv_exists = os.path.exists(PATH)
             signal_exists = os.path.exists(SIGNAL_PATH)
+            configured = get_configured_providers()
             state = load_journal_state()
             topic_count = len(state.get("topics", {}))
             table = Table(show_header=False, box=None, padding=(0, 2))
             table.add_column(style="bold cyan")
             table.add_column()
             table.add_row("Model", MODEL_NAME)
-            table.add_row("Testing Mode", "ON" if TESTING_MODE else "off")
+            keyed = {k: v for k, v in configured.items() if v["key_env"] is not None}
+            table.add_row("Providers", f"{len(keyed)} configured" if keyed else "[red]none[/red]")
+            table.add_row("Testing Mode", "[bold yellow]ON[/bold yellow]" if TESTING_MODE else "off")
             table.add_row("SavedVariables", f"{'found' if sv_exists else 'NOT FOUND'}")
             table.add_row("Signal File", f"{'exists' if signal_exists else 'not yet created'}")
             table.add_row("Topics", str(topic_count))
             console.print(Panel(table, title="Relay Status", border_style="blue"))
+
+        # -- /model -----------------------------------------------------------
+        elif cmd == "/model":
+            subcmd = rest.strip().split(None, 1)[0].lower() if rest.strip() else ""
+            if subcmd in ("", "list"):
+                handle_model_list(console)
+            elif subcmd == "add":
+                handle_model_add(console)
+            elif subcmd == "switch":
+                handle_model_switch(console)
+            else:
+                console.print("[yellow]Usage: /model [list|add|switch][/yellow]")
+
+        # -- /test ------------------------------------------------------------
+        elif cmd == "/test":
+            handle_test(console, rest)
 
         else:
             console.print(f"[yellow]Unknown command: {cmd}. Type /help for commands.[/yellow]")
