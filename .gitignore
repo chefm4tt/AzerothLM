@@ -28,3 +28,5 @@ venv/
 
 # wow addon specific
 AzerothLM_Signal.lua
+journal_state.json
+cache.json
