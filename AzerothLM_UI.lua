@@ -174,6 +174,14 @@ function CreateAzerothLMFrame()
 	f.history:SetFading(false)
 	f.history:SetMaxLines(1000)
 	f.history:SetInsertMode("BOTTOM")
+	f.history:EnableMouseWheel(true)
+	f.history:SetScript("OnMouseWheel", function(self, delta)
+		if delta > 0 then
+			self:ScrollUp()
+		else
+			self:ScrollDown()
+		end
+	end)
 	f.history:AddMessage("Welcome to AzerothLM Research Journal.")
 
 	-- Topic sidebar buttons
