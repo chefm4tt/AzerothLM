@@ -620,26 +620,27 @@ def read_game_context():
 # Pending Action Processing
 # -----------------------------------------------------------------------------
 def process_pending_actions():
-    """Read pendingActions from SavedVariables, apply to journal_state. Returns max processed timestamp."""
+    """Read pendingActions from SavedVariables, apply to journal_state.
+    Returns (max_processed_timestamp, journal_state)."""
     db = read_saved_variables_db()
+    state = load_journal_state()
     if not db:
-        return 0
+        return 0, state
 
     pending = db.get("pendingActions", {})
     if not pending or not isinstance(pending, dict):
         mcp_log("pending: found 0 pending actions")
         mcp_log("pending: max_ts=0")
-        return 0
+        return 0, state
 
     # LuaParser returns positional arrays as {1: val, 2: val, ...}
     sorted_keys = sorted([k for k in pending.keys() if isinstance(k, int)])
     if not sorted_keys:
         mcp_log("pending: found 0 pending actions")
         mcp_log("pending: max_ts=0")
-        return 0
+        return 0, state
 
     mcp_log(f"pending: found {len(sorted_keys)} pending actions")
-    state = load_journal_state()
     max_timestamp = 0
 
     for k in sorted_keys:
@@ -681,7 +682,7 @@ def process_pending_actions():
     if max_timestamp > 0:
         save_journal_state(state)
 
-    return max_timestamp
+    return max_timestamp, state
 
 # -----------------------------------------------------------------------------
 # AI Calling
@@ -853,15 +854,16 @@ def write_signal_file(state, ack_timestamp=None, console=None):
         raise
 
 def sync_pending_and_write_signal(console=None):
-    """Process any pending in-game actions, then rewrite the signal file with ack."""
+    """Process any pending in-game actions, then rewrite the signal file with ack.
+    Returns (max_ts, state) so callers can reuse the loaded state."""
     mcp_log("sync: start")
-    max_ts = process_pending_actions()
+    max_ts, state = process_pending_actions()
     mcp_log(f"sync: pending done, max_ts={max_ts}")
     if console and max_ts > 0:
         debug_print(console, f"Processed pending actions up to ts={max_ts}")
-    state = load_journal_state()
     write_signal_file(state, ack_timestamp=max_ts if max_ts > 0 else None, console=console)
     mcp_log("sync: complete")
+    return max_ts, state
 
 # -----------------------------------------------------------------------------
 # MCP Server
@@ -872,13 +874,11 @@ mcp = FastMCP("AzerothLM Research Relay")
 def create_topic(title: str) -> str:
     """Create a new research topic for the WoW journal. Returns the topic slug."""
     mcp_log(f"[TOOL] create_topic | title='{title}'")
-    sync_pending_and_write_signal()
+    _, state = sync_pending_and_write_signal()
     slug = slugify(title)
     if not slug:
         mcp_log(f"[TOOL] create_topic | ERROR: invalid slug from title='{title}'")
         return "Error: Could not generate a valid slug from the title."
-
-    state = load_journal_state()
     if slug in state["topics"]:
         mcp_log(f"[TOOL] create_topic | DUPLICATE slug='{slug}'")
         return f"Topic '{slug}' already exists. Use ask_question to add entries."
@@ -900,8 +900,7 @@ def ask_question(topic_slug: str, question: str) -> str:
     """Ask a question on a research topic. Reads character context from WoW SavedVariables,
     calls the AI with full topic history for multi-turn context, auto-delivers to signal file."""
     mcp_log(f"[TOOL] ask_question | slug='{topic_slug}' | q='{question[:100]}'")
-    sync_pending_and_write_signal()
-    state = load_journal_state()
+    _, state = sync_pending_and_write_signal()
 
     if topic_slug not in state["topics"]:
         mcp_log(f"[TOOL] ask_question | ERROR: topic '{topic_slug}' not found")
@@ -952,8 +951,7 @@ def ask_question(topic_slug: str, question: str) -> str:
 def list_topics() -> str:
     """List all research topics with metadata."""
     mcp_log("[TOOL] list_topics")
-    sync_pending_and_write_signal()
-    state = load_journal_state()
+    _, state = sync_pending_and_write_signal()
     topics = state.get("topics", {})
 
     if not topics:
@@ -975,8 +973,7 @@ def list_topics() -> str:
 def get_topic(topic_slug: str) -> str:
     """Get the full Q&A history for a research topic."""
     mcp_log(f"[TOOL] get_topic | slug='{topic_slug}'")
-    sync_pending_and_write_signal()
-    state = load_journal_state()
+    _, state = sync_pending_and_write_signal()
 
     if topic_slug not in state["topics"]:
         mcp_log(f"[TOOL] get_topic | ERROR: topic '{topic_slug}' not found")
@@ -1006,7 +1003,7 @@ def get_topic(topic_slug: str) -> str:
 def get_character_context() -> str:
     """Read and decode current character context (gear, professions, quests) from WoW SavedVariables."""
     mcp_log("[TOOL] get_character_context")
-    sync_pending_and_write_signal()
+    sync_pending_and_write_signal()  # return value not needed — context comes from SV
     context = read_game_context()
     if not context:
         mcp_log("[TOOL] get_character_context | no context available")
@@ -1019,8 +1016,7 @@ def get_character_context() -> str:
 def delete_topic(topic_slug: str) -> str:
     """Delete a research topic from the journal."""
     mcp_log(f"[TOOL] delete_topic | slug='{topic_slug}'")
-    sync_pending_and_write_signal()
-    state = load_journal_state()
+    _, state = sync_pending_and_write_signal()
 
     if topic_slug not in state["topics"]:
         mcp_log(f"[TOOL] delete_topic | ERROR: topic '{topic_slug}' not found")
@@ -1406,8 +1402,7 @@ def run_cli():
             slug = tokens[0]
             question = " ".join(tokens[1:])
 
-            sync_pending_and_write_signal(console=console)
-            state = load_journal_state()
+            _, state = sync_pending_and_write_signal(console=console)
             if slug not in state["topics"]:
                 console.print(topic_not_found_hint(slug, state))
                 continue
@@ -1448,8 +1443,7 @@ def run_cli():
 
         # -- /topics ------------------------------------------------------
         elif cmd == "/topics":
-            sync_pending_and_write_signal(console=console)
-            state = load_journal_state()
+            _, state = sync_pending_and_write_signal(console=console)
             topics = state.get("topics", {})
             if not topics:
                 console.print("[yellow]No topics yet. Use /new to create one.[/yellow]")
