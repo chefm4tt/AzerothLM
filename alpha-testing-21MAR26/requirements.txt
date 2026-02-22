@@ -1,5 +1,0 @@
-litellm
-python-dotenv
-filelock
-rich
-mcp
