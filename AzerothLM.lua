@@ -232,19 +232,12 @@ function AzerothLM_MergeSignal()
 		end
 	end
 
-	-- Deletion sync: remove journal topics missing from signal (only if signal has content)
-	local signalHasContent = false
-	for k in pairs(signal) do
-		if k ~= "_ack" then signalHasContent = true; break end
-	end
-
-	if signalHasContent then
-		for slug, _ in pairs(db.journal) do
-			if not signal[slug] and not pendingDeletedSlugs[slug] then
-				db.journal[slug] = nil
-				if db.currentTopicSlug == slug then
-					db.currentTopicSlug = nil
-				end
+	-- Deletion sync: remove journal topics missing from signal
+	for slug, _ in pairs(db.journal) do
+		if not signal[slug] and not pendingDeletedSlugs[slug] then
+			db.journal[slug] = nil
+			if db.currentTopicSlug == slug then
+				db.currentTopicSlug = nil
 			end
 		end
 	end
@@ -256,7 +249,8 @@ function AzerothLM_MergeSignal()
 		end
 	end
 
-	-- Clear runtime global (file on disk persists; timestamp guard prevents re-import)
+	-- Cache signal for /alm reset, then clear runtime global
+	ns.lastSignal = signal
 	_G["AzerothLM_Signal"] = nil
 
 	return newEntries
@@ -421,6 +415,61 @@ SlashCmdList["AZEROTHLM"] = function(msg)
 			slug = db.currentTopicSlug,
 			entryTimestamp = topic.entries[idx].timestamp,
 		})
+
+	elseif msg == "reset" then
+		local db = _G[DB_NAME]
+		if not db then return end
+		wipe(db.journal)
+		db.pendingActions = {}
+		db.currentTopicSlug = nil
+		-- Re-merge from cached signal (if available)
+		if ns.lastSignal then
+			_G["AzerothLM_Signal"] = ns.lastSignal
+			local restored = AzerothLM_MergeSignal()
+			print(string.format("|cFF00FF00AzerothLM|r: Reset complete. %d entries restored.", restored))
+		else
+			print("|cFF00FF00AzerothLM|r: Reset complete. Type |cFFFFFF00/alm refresh|r to re-sync with relay.")
+		end
+		if AzerothLM_UpdateJournalDisplay then
+			AzerothLM_UpdateJournalDisplay()
+		end
+
+	elseif msg == "help" then
+		print("|cFF00FF00AzerothLM Commands:|r")
+		print("  |cFFFFFF00/alm|r — Toggle journal window")
+		print("  |cFFFFFF00/alm scan|r — Refresh character context")
+		print("  |cFFFFFF00/alm refresh|r — Reload UI to sync with relay")
+		print("  |cFFFFFF00/alm topics|r — List topics in chat")
+		print("  |cFFFFFF00/alm delentry N|r — Delete entry N from current topic")
+		print("  |cFFFFFF00/alm reset|r — Clear and rebuild journal from last sync")
+		print("  |cFFFFFF00/alm wipe|r — Wipe all journal data")
+		print("  |cFFFFFF00/alm help|r — Show this help")
+
+	elseif msg == "wipe" then
+		local db = _G[DB_NAME]
+		if not db then return end
+		-- Queue relay-side deletions before wiping
+		local deleteActions = {}
+		for slug, _ in pairs(db.journal) do
+			table.insert(deleteActions, {
+				action = "delete_topic",
+				slug = slug,
+				timestamp = time(),
+			})
+		end
+		wipe(db.journal)
+		db.pendingActions = deleteActions
+		db.currentTopicSlug = nil
+		ns.lastSignal = nil
+		if AzerothLM_UpdateJournalDisplay then
+			AzerothLM_UpdateJournalDisplay()
+		end
+		local count = #deleteActions
+		if count > 0 then
+			print(string.format("|cFF00FF00AzerothLM|r: Wiped %d topics. Deletions queued for relay sync.", count))
+		else
+			print("|cFF00FF00AzerothLM|r: Journal already empty.")
+		end
 
 	else
 		if not _G["AzerothLM_Frame"] then

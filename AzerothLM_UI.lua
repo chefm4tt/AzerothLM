@@ -104,13 +104,22 @@ local function FormatResponseLine(text)
 	-- 2. Replace bullet markers with Unicode bullet
 	text = text:gsub("^(%s*)[%*%-]%s", "%1\226\128\162 ")  -- UTF-8 for •
 
-	-- 3. Colorize items: [Item Name] (ID:12345) → colored name
-	text = text:gsub("%[([^%]]+)%]%s*%(ID:(%d+)%)", function(name, id)
+	-- 3. Colorize items with explicit ID: [Item Name] (ID:12345) or (ID 12345)
+	text = text:gsub("%[([^%]]+)%]%s*%(ID[:%s](%d+)%)", function(name, id)
 		local _, _, quality = GetItemInfo(tonumber(id))
 		if quality and QUALITY_COLORS[quality] then
-			return "|c" .. QUALITY_COLORS[quality] .. "[" .. name .. "]|r (ID:" .. id .. ")"
+			return "|c" .. QUALITY_COLORS[quality] .. "[" .. name .. "]|r"
 		end
-		return "[" .. name .. "] (ID:" .. id .. ")"
+		return "[" .. name .. "]"
+	end)
+
+	-- 4. Try name-based lookup for remaining [Item Name] without IDs
+	text = text:gsub("%[([^%]]+)%]", function(name)
+		local _, _, quality = GetItemInfo(name)
+		if quality and QUALITY_COLORS[quality] then
+			return "|c" .. QUALITY_COLORS[quality] .. "[" .. name .. "]|r"
+		end
+		return "[" .. name .. "]"
 	end)
 
 	return text
@@ -133,7 +142,14 @@ function AzerothLM_UpdateJournalDisplay()
 
 	-- Update Refresh button to show pending action count
 	if f.refreshBtn then
-		local pendingCount = db.pendingActions and #db.pendingActions or 0
+		local pendingCount = 0
+		if db.pendingActions then
+			for _, action in ipairs(db.pendingActions) do
+				if not (action.action == "delete_topic" and not db.journal[action.slug]) then
+					pendingCount = pendingCount + 1
+				end
+			end
+		end
 		if pendingCount > 0 then
 			f.refreshBtn:SetText(string.format("Sync (%d)", pendingCount))
 		else

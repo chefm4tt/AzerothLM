@@ -78,9 +78,10 @@ SYSTEM_INSTRUCTION = (
     "- Use reputation standings to identify unlocks the player is close to.\n\n"
 
     "ITEM FORMAT:\n"
-    "- When mentioning a specific item, write it as [Item Name] (ID:itemID).\n"
-    "- Always include the numeric item ID so the display can link it.\n"
-    "- Example: [Sunfury Bow of the Phoenix] (ID:28016)\n\n"
+    "- When mentioning a specific equippable item, write it EXACTLY as [Item Name] (ID:itemID).\n"
+    "- Always include the numeric item ID from Wowhead so the display can link it.\n"
+    "- Example: [Sunfury Bow of the Phoenix] (ID:28016)\n"
+    "- Do NOT use this format for quests, NPCs, or zones — only equippable items.\n\n"
 
     "RESPONSE FORMAT:\n"
     "- Keep responses under 1500 characters.\n"
@@ -651,7 +652,7 @@ def write_signal_file(state, ack_timestamp=None):
     if not signal_data:
         wait_for_file_ready(SIGNAL_PATH)
         with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
-            f.write('AzerothLM_Signal = nil\n')
+            f.write('AzerothLM_Signal = {}\n')
         return
 
     try:
@@ -1270,7 +1271,7 @@ def run_cli():
                     write_signal_file(state)
                 elif os.path.exists(SIGNAL_PATH):
                     with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
-                        f.write('AzerothLM_Signal = nil\n')
+                        f.write('AzerothLM_Signal = {}\n')
             except Exception:
                 pass
             console.print(f"[green]Deleted topic:[/green] {title} [dim](slug: {slug})[/dim]")
