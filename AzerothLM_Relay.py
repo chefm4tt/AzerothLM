@@ -610,12 +610,14 @@ def process_pending_actions():
     pending = db.get("pendingActions", {})
     if not pending or not isinstance(pending, dict):
         mcp_log("pending: found 0 pending actions")
+        mcp_log("pending: max_ts=0")
         return 0
 
     # LuaParser returns positional arrays as {1: val, 2: val, ...}
     sorted_keys = sorted([k for k in pending.keys() if isinstance(k, int)])
     if not sorted_keys:
         mcp_log("pending: found 0 pending actions")
+        mcp_log("pending: max_ts=0")
         return 0
 
     mcp_log(f"pending: found {len(sorted_keys)} pending actions")
