@@ -46,6 +46,8 @@ usage_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_h
 
 _sv_cache = None  # Cached result of read_saved_variables_db()
 _sv_mtime = 0     # os.path.getmtime(PATH) when _sv_cache was populated
+_response_cache = None  # In-memory AI response cache (loaded from cache.json on first use)
+_CACHE_MAX_ENTRIES = 100
 
 PLACEHOLDER_PATTERN = re.compile(r"^YOUR_.*_HERE$|^$")
 PROVIDERS = {
@@ -275,17 +277,27 @@ def get_cache_key(model, query, context):
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 def load_cache():
+    global _response_cache
+    if _response_cache is not None:
+        return _response_cache
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                _response_cache = json.load(f)
+                return _response_cache
         except Exception:
-            return {}
-    return {}
+            pass
+    _response_cache = {}
+    return _response_cache
 
 def save_cache(key, response):
     cache = load_cache()
     cache[key] = response
+    # FIFO eviction: keep only the most recent entries (dict preserves insertion order)
+    if len(cache) > _CACHE_MAX_ENTRIES:
+        excess = len(cache) - _CACHE_MAX_ENTRIES
+        for old_key in list(cache.keys())[:excess]:
+            del cache[old_key]
     with open(CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, indent=2)
 
