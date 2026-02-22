@@ -1,76 +1,112 @@
-# AzerothLM
+# 🧠 AzerothLM
 
-**AzerothLM** is a World of Warcraft addon and Python relay that bridges the game's sandboxed Lua environment with modern Large Language Models. Players create research topics and ask context-aware questions through an interactive CLI, and view AI responses in a read-only in-game journal.
+An AI research companion for World of Warcraft — context-aware, multi-provider, and journal-based.
 
-## Architecture: The "Air-Gap" Bridge
+AzerothLM bridges the game's sandboxed Lua environment with modern Large Language Models. It reads your character's actual state — gear, professions, quests, reputations, zone, gold — and makes that context available to an AI that answers specific, actionable questions about your character, not generic ones.
+
+---
+
+## 💡 What Can You Do With It?
+
+**Pre-raid gear planning**
+> You're a level 60 Hunter sitting in Stormwind with a mix of dungeon blues and quest greens. AzerothLM reads every equipped slot and tells you exactly which pieces to upgrade first, which quest rewards you're about to miss, and which dungeon bosses to prioritize — without you typing a single item name.
+
+**Farming route optimization**
+> Mining 300, Skinning 306, currently questing in Hellfire Peninsula with 14 active quests. Ask AzerothLM for the best gold-per-hour route and it answers with specifics — which nodes, which mobs, which respawn paths — tailored to your professions and current location.
+
+**Reputation & attunement planning**
+> Hostile with The Aldor, Neutral with The Sha'tar, and trying to figure out what to do next. AzerothLM traces your attunement chain, maps out the rep grind, and identifies which of your active quests feed into it — all from your actual standings and quest log.
+
+---
+
+## 🏗️ Architecture: The Air-Gap Bridge
 
 WoW addons run in a sandboxed Lua environment with no internet access. AzerothLM bridges this gap using a file-based relay:
 
-1. **Context Collection**: The addon scans your character's equipped gear, professions, and quest log into `SavedVariables`.
-2. **Research Input**: You create topics and ask questions through the relay CLI (or MCP tools).
-3. **AI Processing**: The relay sends your question plus character context to an LLM via [LiteLLM](https://docs.litellm.ai/) (supporting multiple providers).
-4. **Signal File**: The relay writes the AI response to `AzerothLM_Signal.lua`.
-5. **In-Game Sync**: Type `/reload` in-game to load the updated journal.
+1. **Context Collection** — The addon scans your equipped gear, profession levels, active quests, reputation standings, and talent points into `SavedVariables`.
+2. **Research Input** — You create topics and ask questions through the relay CLI or MCP tools.
+3. **AI Processing** — The relay sends your question plus full character context to an LLM via [LiteLLM](https://docs.litellm.ai/), supporting multiple providers.
+4. **Signal File** — The relay writes the AI response back to `AzerothLM_Signal.lua`.
+5. **In-Game Sync** — Type `/reload` in-game to load the updated journal.
 
-## Key Features
+---
 
-- **Context-Aware AI** — Automatically reads your equipped gear, profession levels, and active quests to provide specific, actionable advice.
-- **Research Journal** — Organize questions into named topics with full Q&A history.
-- **Multi-Provider Support** — Switch between Google Gemini, OpenAI, Anthropic, or local Ollama models at runtime.
-- **Interactive CLI** — Rich terminal interface with commands for topic management, model switching, and diagnostics.
-- **MCP Server Mode** — Run as a [Model Context Protocol](https://modelcontextprotocol.io/) server for integration with Claude Code or other AI agents.
-- **In-Game Journal Viewer** — Draggable, scrollable frame with topic navigation, right-click context menus, and mouse wheel support.
-- **Runtime Configuration** — Add API keys (`/model add`), switch models (`/model switch`), and toggle test mode (`/test on|off`) without editing files.
-- **Test Mode** — Validate your configuration and test the full pipeline without consuming API credits. All responses are prefixed with `[TEST MODE]`.
-- **Response Caching** — Cached responses reduce API usage and latency for repeated queries.
-- **Rate Limiting** — Built-in cooldown and exponential backoff protect against API rate limits.
+## ✨ Key Features
 
-## Requirements
+- 🤖 **Context-Aware AI** — Reads your equipped gear (all 19 slots), profession levels, active quest log, reputation standings, talent distribution, zone, level, class, and gold to give character-specific answers.
+- 📖 **Research Journal** — Organize questions into named topics with full multi-turn Q&A history. The AI remembers the conversation within each topic.
+- 🔀 **Multi-Provider Support** — Switch between Google Gemini, OpenAI, Anthropic Claude, or local Ollama models at runtime. No restart required.
+- 🖥️ **Interactive CLI** — Rich terminal interface with commands for topic management, model switching, and diagnostics.
+- 🔌 **MCP Server Mode** — Run as a [Model Context Protocol](https://modelcontextprotocol.io/) server for integration with Claude Code or any MCP-compatible AI agent.
+- 🎮 **In-Game Journal Viewer** — Draggable, scrollable frame with topic navigation, item quality colorization, right-click context menus, and mouse wheel support.
+- ⚙️ **Runtime Configuration** — Add API keys (`/model add`), switch models (`/model switch`), and toggle test mode (`/test on|off`) without editing files.
+- 🧪 **Test Mode** — Validate your configuration and test the full pipeline without consuming API credits.
+- 🔄 **Response Caching** — Identical queries return instantly from cache, saving API usage and latency.
+- 🐛 **Debug Mode** — `--debug` flag or `DEBUG=true` in `.env` enables detailed diagnostic logging to help troubleshoot any issues.
 
-- **Game**: World of Warcraft: TBC Classic (Anniversary Edition compatible)
+---
+
+## 📋 Requirements
+
+- **Game**: World of Warcraft TBC Classic / Anniversary Edition (Interface version 20505)
 - **Runtime**: Python 3.x
-- **Python Libraries**: `litellm`, `python-dotenv`, `filelock`, `rich`, `mcp`
+- **Python Libraries**: `litellm`, `python-dotenv`, `filelock`, `rich`, `mcp`, `pyfiglet`
+- **API Key**: Google Gemini (recommended — free tier available), OpenAI, Anthropic, or a local Ollama instance
 
-## Installation
+---
+
+## ⚙️ Installation
 
 ### 1. Addon Setup
 
 Copy the `AzerothLM` folder into your WoW AddOns directory:
 ```
-Interface/AddOns/AzerothLM/
+World of Warcraft/_anniversary_/Interface/AddOns/AzerothLM/
 ```
 
 ### 2. Python Environment
 
-Install the required libraries:
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 3. Configuration
 
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-2. Edit `.env` and update the two path settings to match your WoW installation:
-   - `WOW_SAVED_VARIABLES_PATH` — path to your account's `SavedVariables/AzerothLM.lua`
-   - `WOW_ADDON_PATH` — path to the `Interface/AddOns/AzerothLM` folder
-3. Add at least one API key:
-   - **Option A**: Paste your key directly into `.env` (e.g., `GEMINI_API_KEY=your_key`)
-   - **Option B**: Start the relay and use the interactive `/model add` command
-4. Optionally change `MODEL_NAME` in `.env`, or use `/model switch` at runtime.
+Copy `.env.example` to `.env` and configure:
 
-## Usage
+```bash
+cp .env.example .env
+```
 
-### CLI Mode (Primary)
+Edit `.env` with your paths and API key:
 
-Start the relay:
+```ini
+# Path to your account's SavedVariables file
+WOW_SAVED_VARIABLES_PATH=C:\...\WTF\Account\YOUR_ACCOUNT\SavedVariables\AzerothLM.lua
+
+# Path to the installed addon folder
+WOW_ADDON_PATH=C:\...\Interface\AddOns\AzerothLM
+
+# Add at least one API key (or use /model add at runtime)
+GEMINI_API_KEY=your_key_here
+MODEL_NAME=gemini/gemini-2.5-flash
+```
+
+### 4. First Run
+
+1. Log into WoW, type `/alm scan` to collect your character context, then `/reload`
+2. Start the relay: `python AzerothLM_Relay.py`
+3. Create your first topic: `/new gear-upgrades`
+4. Ask a question: `/ask gear-upgrades What should I upgrade first?`
+5. Type `/reload` in-game to see the response in the journal
+
+---
+
+## 🖥️ CLI Mode
+
 ```bash
 python AzerothLM_Relay.py
 ```
-
-The CLI provides a Rich terminal interface with the following commands:
 
 | Command | Description |
 |---------|-------------|
@@ -79,44 +115,124 @@ The CLI provides a Rich terminal interface with the following commands:
 | `/topics` | List all topics |
 | `/view <slug>` | View full Q&A history for a topic |
 | `/delete <slug>` | Delete a topic |
-| `/model` | Show providers and models |
-| `/model add` | Add a new provider API key |
-| `/model switch` | Switch to a different model |
-| `/test on\|off` | Toggle test mode |
-| `/context` | Show character context |
-| `/usage` | Show API usage stats |
+| `/model` | Show configured providers and active model |
+| `/model add` | Add a new provider API key interactively |
+| `/model switch` | Switch to a different model at runtime |
+| `/test on\|off` | Toggle test mode (mock responses, no API cost) |
+| `/context` | Show current character context |
+| `/usage` | Show API usage stats and token counts |
 | `/status` | Show relay configuration |
 | `/help` | Show all commands |
 | `/quit` | Exit the relay |
 
-### MCP Server Mode
+---
 
-For integration with Claude Code or other MCP-compatible AI agents:
+## 🔌 MCP Server Mode
+
+AzerothLM can run as a [Model Context Protocol](https://modelcontextprotocol.io/) server, exposing its research journal tools to any MCP-compatible AI agent — Claude Code, custom apps, or your own tooling.
+
+### Starting the server
+
 ```bash
 python AzerothLM_Relay.py --mcp
+
+# With diagnostic logging:
+python AzerothLM_Relay.py --mcp --debug 2>>debug.log
 ```
 
-This exposes research journal tools (create topics, ask questions, view history, read character context) as MCP tool calls.
+### Claude Code integration
 
-### In-Game
+Add to your `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "azerothlm": {
+      "command": "python",
+      "args": ["path/to/AzerothLM_Relay.py", "--mcp"]
+    }
+  }
+}
+```
+
+Once connected, Claude Code can call all six tools directly in conversation — creating topics, asking character-aware questions, and managing your journal without the CLI.
+
+### Exposed Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `create_topic` | Create a new research topic in the journal | `title: str` |
+| `ask_question` | Ask a question with full character context and topic history | `topic_slug: str`, `question: str` |
+| `list_topics` | List all topics with entry counts and last-updated timestamps | — |
+| `get_topic` | Retrieve the full Q&A history for a topic | `topic_slug: str` |
+| `get_character_context` | Read live character data from WoW SavedVariables | — |
+| `delete_topic` | Delete a topic and sync the removal to the in-game journal | `topic_slug: str` |
+
+### Character Context
+
+`get_character_context` returns a JSON object with everything the addon has collected. Every `ask_question` call includes this automatically.
+
+| Category | Data |
+|----------|------|
+| **Player** | Level, class, race, current zone and subzone, gold on hand |
+| **Gear** | All 19 equipment slots with item name and ID (Head through Tabard) |
+| **Professions** | All professions and weapon skills with current rank and max rank |
+| **Quests** | Active quest log with quest ID, title, level, and completion status |
+| **Reputations** | All tracked factions with current standing (Hostile → Exalted) |
+| **Talents** | Talent point distribution across all three trees |
+
+---
+
+## 🎮 In-Game Commands
+
+After using the CLI to ask questions, type `/reload` to sync responses into the journal.
 
 | Command | Description |
 |---------|-------------|
 | `/alm` | Toggle the journal window |
-| `/alm scan` | Refresh character context (gear, professions, quests) |
-| `/alm refresh` | Reload UI (shortcut for `/reload`) |
-| `/alm topics` | List topics in chat |
+| `/alm scan` | Refresh character context (gear, professions, quests, reputations) |
+| `/alm refresh` | Reload UI shortcut |
+| `/alm topics` | List all topics in chat |
 | `/alm delentry <N>` | Delete entry N from the current topic |
+| `/alm reset` | Clear and rebuild the journal from the latest relay data |
+| `/alm wipe` | Wipe all journal data and queue deletions on the relay side |
+| `/alm help` | Show all in-game commands |
 
-After using the CLI to create topics and ask questions, type `/reload` in-game to sync the latest data into the journal viewer.
+---
 
-## Testing
+## 🧪 Test Mode
 
-Enable test mode to validate your setup without consuming API credits:
+Validate your setup without consuming API credits:
 
 ```
 /test on    — enable test mode, run configuration checks
 /test off   — disable test mode
 ```
 
-When test mode is active, all AI responses are replaced with mock data prefixed with `[TEST MODE]`. The `/test on` command also runs a diagnostic check verifying your `.env` file, API key, SavedVariables path, and addon path.
+When active, all AI responses are replaced with mock data prefixed `[TEST MODE]`. The `/test on` command also runs a full diagnostic verifying your `.env`, API key, SavedVariables path, and addon path.
+
+---
+
+## 📋 Changelog
+
+### v0.1-alpha.2 *(in testing)*
+
+- 🆕 In-game journal management commands: `/alm reset`, `/alm wipe`, `/alm help`
+- 🆕 Item quality colorization in the journal viewer — gear names display in their rarity color
+- 🆕 Richer character context: reputation standings and talent distribution now included
+- 🆕 Debug mode: `--debug` startup flag and `DEBUG=true` env var for diagnostic logging
+- ✨ CLI UX improvements: ASCII gradient header, loading spinners, cleaner output
+- ✨ Improved error messages and input validation throughout the CLI
+- ✨ Contextual hints when a topic slug isn't found
+- 🐛 Fixed signal sync edge cases — empty journal now correctly signals in-game cleanup
+- 🐛 Fixed item quality pattern matching — more lenient parsing with name-based fallback
+
+### v0.1-alpha.1
+
+- 🆕 Multi-provider LLM support: Google Gemini, OpenAI, Anthropic, local Ollama
+- 🆕 Interactive CLI with `/model add`, `/model switch`, `/test on|off`, `/status`, `/usage`
+- 🆕 MCP server mode for AI agent integration
+- 🆕 Research journal with named topics and full multi-turn Q&A history
+- 🆕 In-game journal viewer: draggable frame, topic tabs, right-click menus, mouse wheel scroll
+- 🆕 Response caching and built-in rate limiting with exponential backoff
+- 🆕 Air-gap bridge architecture: file-based relay between WoW sandbox and external AI
