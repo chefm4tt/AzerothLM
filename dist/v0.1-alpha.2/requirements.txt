@@ -1,0 +1,5 @@
+litellm
+python-dotenv
+rich
+mcp
+pyfiglet
