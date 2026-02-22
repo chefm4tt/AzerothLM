@@ -67,11 +67,28 @@ PROVIDERS = {
 }
 
 SYSTEM_INSTRUCTION = (
-    "You are a specialized AI assistant for World of Warcraft: The Burning Crusade Classic. "
-    "Use the provided JSON context (gear, professions, quests) to give specific, actionable advice. "
-    "Do not ask what game the user is playing; assume it is always TBC Classic. "
-    "Keep responses under 1500 characters. Use short paragraphs and bullet points for scannability. "
-    "Format with simple line breaks. Do not use markdown headers, tables, or code blocks."
+    "You are a World of Warcraft: The Burning Crusade Classic advisor. "
+    "The player's character data is provided as JSON context.\n\n"
+
+    "ADVICE GUIDELINES:\n"
+    "- Give specific, actionable advice using the character's actual gear, level, class, talents, and quests.\n"
+    "- Consider the talent spec to determine role (tank, healer, DPS) and tailor recommendations.\n"
+    "- When suggesting gear upgrades, name the item and its source (dungeon, quest, reputation vendor, crafted).\n"
+    "- For professions, focus on primary crafting skills; secondary skills are lower priority.\n"
+    "- Use reputation standings to identify unlocks the player is close to.\n\n"
+
+    "ITEM FORMAT:\n"
+    "- When mentioning a specific item, write it as [Item Name] (ID:itemID).\n"
+    "- Always include the numeric item ID so the display can link it.\n"
+    "- Example: [Sunfury Bow of the Phoenix] (ID:28016)\n\n"
+
+    "RESPONSE FORMAT:\n"
+    "- Keep responses under 1500 characters.\n"
+    "- Use short paragraphs and bullet points (use the bullet character).\n"
+    "- Do NOT use markdown: no # headers, **bold**, *italic*, ``` code blocks, or tables.\n"
+    "- Use plain text with line breaks only.\n"
+    "- Start with the most actionable recommendation.\n"
+    "- Do not ask what game the user is playing."
 )
 
 # -----------------------------------------------------------------------------
@@ -331,6 +348,31 @@ def wait_for_file_ready(path):
 # -----------------------------------------------------------------------------
 # Context Reading
 # -----------------------------------------------------------------------------
+SLOT_NAMES = {
+    1: "Head", 2: "Neck", 3: "Shoulder", 4: "Shirt", 5: "Chest",
+    6: "Waist", 7: "Legs", 8: "Feet", 9: "Wrist", 10: "Hands",
+    11: "Ring1", 12: "Ring2", 13: "Trinket1", 14: "Trinket2",
+    15: "Back", 16: "MainHand", 17: "OffHand", 18: "Ranged", 19: "Tabard",
+}
+
+STANDING_NAMES = {
+    1: "Hated", 2: "Hostile", 3: "Unfriendly", 4: "Neutral",
+    5: "Friendly", 6: "Honored", 7: "Revered", 8: "Exalted",
+}
+
+def parse_item_link(raw_link):
+    """Extract name and itemId from a WoW item link string."""
+    if not raw_link:
+        return None
+    name_match = re.search(r'\[([^\]]+)\]', raw_link)
+    if not name_match:
+        return None
+    id_match = re.search(r'item:(\d+)', raw_link)
+    return {
+        "name": name_match.group(1),
+        "itemId": int(id_match.group(1)) if id_match else None,
+    }
+
 def read_saved_variables_db():
     """Read and parse the full AzerothLM_DB from SavedVariables."""
     if not os.path.exists(PATH):
@@ -359,13 +401,37 @@ def read_game_context():
 
     context = {}
 
-    # Gear
+    # Player basics
+    context["player"] = {
+        "level": db.get("level"),
+        "class": db.get("class"),
+        "race": db.get("race"),
+        "zone": db.get("zone"),
+        "subzone": db.get("subzone"),
+        "gold": db.get("gold"),
+    }
+
+    # Talents
+    talents = db.get("talents", {})
+    if isinstance(talents, dict):
+        decoded_talents = {}
+        for k, t in talents.items():
+            if isinstance(t, dict) and "name" in t:
+                decoded_talents[decode_hex(t["name"])] = t.get("spent", 0)
+        context["player"]["talents"] = decoded_talents
+
+    # Gear — structured with slot names and parsed item links
     gear = db.get("gear", {})
     decoded_gear = {}
     if isinstance(gear, dict):
         for k, v in gear.items():
+            slot_num = int(k)
+            slot_name = SLOT_NAMES.get(slot_num, f"Slot{slot_num}")
             if v:
-                decoded_gear[str(k)] = decode_hex(v)
+                raw = decode_hex(v)
+                parsed = parse_item_link(raw)
+                if parsed:
+                    decoded_gear[slot_name] = parsed
     context["gear"] = decoded_gear
 
     # Professions
@@ -395,6 +461,20 @@ def read_game_context():
                     q_new["title"] = decode_hex(q_new["title"])
                 decoded_quests.append(q_new)
     context["quests"] = decoded_quests
+
+    # Reputations
+    reps = db.get("reputations", {})
+    if isinstance(reps, dict):
+        decoded_reps = []
+        sorted_keys = sorted([k for k in reps.keys() if isinstance(k, int)])
+        for k in sorted_keys:
+            r = reps[k]
+            if isinstance(r, dict):
+                decoded_reps.append({
+                    "faction": decode_hex(r.get("name", "")),
+                    "standing": STANDING_NAMES.get(r.get("standing", 0), "Unknown"),
+                })
+        context["reputations"] = decoded_reps
 
     return context
 
@@ -634,7 +714,7 @@ def ask_question(topic_slug: str, question: str) -> str:
 
     # Read fresh character context
     context = read_game_context()
-    context_str = str(context)
+    context_str = json.dumps(context, ensure_ascii=False)
 
     # Call AI with conversation history
     history = topic.get("entries", [])
@@ -1106,7 +1186,7 @@ def run_cli():
             console.print(f"[dim]Asking on '{topic['title']}'...[/dim]")
 
             context = read_game_context()
-            context_str = str(context)
+            context_str = json.dumps(context, ensure_ascii=False)
             history = topic.get("entries", [])
             ai_response = call_ai(question, context_str, topic["title"], history)
             display_response = truncate_response(ai_response)

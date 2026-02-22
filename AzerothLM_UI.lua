@@ -85,6 +85,38 @@ StaticPopupDialogs["AZEROTHLM_DELETE_ENTRY"] = {
 }
 
 -- ----------------------------------------------------------------------------
+-- Response Formatting
+-- ----------------------------------------------------------------------------
+local QUALITY_COLORS = {
+	[0] = "ff9d9d9d", -- Poor (gray)
+	[1] = "ffffffff", -- Common (white)
+	[2] = "ff1eff00", -- Uncommon (green)
+	[3] = "ff0070dd", -- Rare (blue)
+	[4] = "ffa335ee", -- Epic (purple)
+	[5] = "ffff8000", -- Legendary (orange)
+}
+
+local function FormatResponseLine(text)
+	-- 1. Clean markdown artifacts
+	text = text:gsub("%*%*([^%*]+)%*%*", "%1")   -- Strip **bold**
+	text = text:gsub("%*([^%*]+)%*", "%1")         -- Strip *italic*
+
+	-- 2. Replace bullet markers with Unicode bullet
+	text = text:gsub("^(%s*)[%*%-]%s", "%1\226\128\162 ")  -- UTF-8 for •
+
+	-- 3. Colorize items: [Item Name] (ID:12345) → colored name
+	text = text:gsub("%[([^%]]+)%]%s*%(ID:(%d+)%)", function(name, id)
+		local _, _, quality = GetItemInfo(tonumber(id))
+		if quality and QUALITY_COLORS[quality] then
+			return "|c" .. QUALITY_COLORS[quality] .. "[" .. name .. "]|r (ID:" .. id .. ")"
+		end
+		return "[" .. name .. "] (ID:" .. id .. ")"
+	end)
+
+	return text
+end
+
+-- ----------------------------------------------------------------------------
 -- Journal Display
 -- ----------------------------------------------------------------------------
 function AzerothLM_UpdateJournalDisplay()
@@ -157,17 +189,18 @@ function AzerothLM_UpdateJournalDisplay()
 			end
 		end
 
-		-- Answer (green)
+		-- Answer (green header, formatted content)
 		local aText = entry.answer or ""
 		local aLines = { strsplit("\n", aText) }
 		local aHeaderPrinted = false
 		for _, line in ipairs(aLines) do
 			if line and line ~= "" then
+				local formatted = FormatResponseLine(line)
 				if not aHeaderPrinted then
-					f.history:AddMessage("|cFF00FF00A:|r " .. line)
+					f.history:AddMessage("|cFF00FF00A:|r " .. formatted)
 					aHeaderPrinted = true
 				else
-					f.history:AddMessage(line)
+					f.history:AddMessage(formatted)
 				end
 			end
 		end

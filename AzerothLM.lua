@@ -61,6 +61,35 @@ function AzerothLM_UpdatePlayerContext(silent)
 		end
 	end
 
+	-- 4. Character Basics
+	db.level = UnitLevel("player")
+	db.class = select(2, UnitClass("player"))
+	db.race = select(2, UnitRace("player"))
+	db.zone = GetZoneText()
+	db.subzone = GetSubZoneText()
+	db.gold = math.floor(GetMoney() / 10000)
+
+	-- 5. Talent Spec (tree names + points spent)
+	db.talents = {}
+	for tab = 1, 3 do
+		local name, _, pointsSpent = GetTalentTabInfo(tab)
+		if name then
+			db.talents[tab] = { name = StringToHex(name), spent = pointsSpent }
+		end
+	end
+
+	-- 6. Key Reputations (non-Exalted factions only)
+	db.reputations = {}
+	for i = 1, GetNumFactions() do
+		local name, _, standingId, _, _, _, _, _, isHeader = GetFactionInfo(i)
+		if not isHeader and standingId and standingId < 8 then
+			table.insert(db.reputations, {
+				name = StringToHex(name),
+				standing = standingId
+			})
+		end
+	end
+
 	db.lastScanTime = time()
 	if not silent then
 		print("|cFF00FF00AzerothLM|r: Data refresh complete.")
