@@ -3,3 +3,4 @@ python-dotenv
 filelock
 rich
 mcp
+pyfiglet
