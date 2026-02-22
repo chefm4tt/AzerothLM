@@ -28,13 +28,6 @@ SIGNAL_PATH = os.path.join(ADDON_PATH, "AzerothLM_Signal.lua")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini/gemini-2.5-flash")
 TESTING_MODE = os.getenv("TESTING_MODE", "false").lower() == "true"
 
-if not PATH or PATH == "." or "YOUR_ACCOUNT_NAME" in PATH:
-    print("Configuration Error: Please update WOW_SAVED_VARIABLES_PATH in your .env file")
-    sys.exit(1)
-
-if not ADDON_PATH or ADDON_PATH == ".":
-    print("Configuration Error: Please set WOW_ADDON_PATH in your .env file (e.g. Interface/AddOns/AzerothLM)")
-    sys.exit(1)
 
 CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache.json")
 JOURNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "journal_state.json")
@@ -80,7 +73,7 @@ PROVIDERS = {
 
 SYSTEM_INSTRUCTION = (
     "You are a World of Warcraft: The Burning Crusade Classic advisor. "
-    "The player's character data is provided as JSON context.\n\n"
+    "The player's character data is provided as formatted text.\n\n"
 
     "ADVICE GUIDELINES:\n"
     "- Give specific, actionable advice using the character's actual gear, level, class, talents, and quests.\n"
@@ -273,8 +266,133 @@ def topic_not_found_hint(slug, state):
         return (f"[red]Topic '{slug}' not found.[/red]\n"
                 f"[yellow]Hint: No topics exist yet. Use /new <title> to create one.[/yellow]")
 
-def get_cache_key(model, query, context):
-    raw = f"{model}{query}{context}"
+# -----------------------------------------------------------------------------
+# Question Classification & Context Formatting
+# -----------------------------------------------------------------------------
+_CONTEXT_KEYWORDS = {
+    "gear": {
+        "gear", "weapon", "armor", "helm", "head", "neck", "shoulder", "chest",
+        "waist", "belt", "legs", "pants", "feet", "boots", "wrist", "bracers",
+        "hands", "gloves", "ring", "trinket", "back", "cloak", "offhand", "shield",
+        "ranged", "bow", "gun", "wand", "upgrade", "item", "equip", "slot", "bis",
+        "best in slot", "ilvl", "item level", "enchant", "gem", "socket",
+        "mainhand", "main-hand", "off-hand", "two-hand",
+    },
+    "professions": {
+        "profession", "crafting", "craft", "make", "create", "herbalism", "mining",
+        "skinning", "leatherworking", "blacksmithing", "tailoring", "engineering",
+        "alchemy", "enchanting", "jewelcrafting", "fishing", "cooking", "first aid",
+        "recipe", "pattern", "schematic", "transmute", "potion", "elixir", "flask",
+        "cloth", "leather", "metal", "ore", "herb", "skill", "rank", "level up",
+    },
+    "quests": {
+        "quest", "quests", "questline", "objective", "complete", "turn in", "turnin",
+        "chain", "storyline", "npc", "kill", "collect", "gather", "escort",
+        "nagrand", "hellfire", "zangarmarsh", "terokkar", "shadowmoon", "blade's edge",
+        "netherstorm", "daily", "dungeon quest", "group quest", "elite quest",
+    },
+    "reputations": {
+        "reputation", "rep", "faction", "exalted", "revered", "honored", "friendly",
+        "grind", "tabard", "scryers", "aldor", "consortium", "cenarion", "expedition",
+        "sha'tar", "shattrath", "violet eye", "keepers of time", "lower city",
+        "thrallmar", "honor hold", "kurenai", "maghar", "sporeggar", "ogri'la",
+        "skyguard", "netherwing", "steamwheedle", "ashtongue",
+    },
+}
+
+def classify_question(question):
+    """Return the set of context sections relevant to this question via keyword matching.
+    Always includes 'player'. Falls back to all sections if nothing matches."""
+    sections = {"player"}
+    q_lower = question.lower()
+    matched = False
+    for section, keywords in _CONTEXT_KEYWORDS.items():
+        if any(kw in q_lower for kw in keywords):
+            sections.add(section)
+            matched = True
+    if not matched:
+        sections.update(_CONTEXT_KEYWORDS.keys())
+    return sections
+
+def format_context(context_dict, sections):
+    """Format character context as readable text for the given sections."""
+    if not context_dict:
+        return "(No character context available)"
+    lines = []
+
+    player = context_dict.get("player", {})
+    if player and "player" in sections:
+        level = player.get("level", "?")
+        cls = player.get("class", "?")
+        race = player.get("race", "?")
+        talents = player.get("talents", {})
+        if talents:
+            talent_str = " / ".join(f"{tree} {pts}" for tree, pts in talents.items())
+            header = f"Level {level} {race} {cls} ({talent_str})"
+        else:
+            header = f"Level {level} {race} {cls}"
+        lines.append(header)
+
+        zone = player.get("zone", "")
+        subzone = player.get("subzone", "")
+        loc = f"{subzone} - {zone}" if subzone and zone else (zone or subzone or "")
+        gold_raw = player.get("gold")
+        loc_gold = f"Zone: {loc}" if loc else ""
+        if gold_raw is not None:
+            try:
+                g_total = int(gold_raw)
+                g = g_total // 10000
+                s = (g_total % 10000) // 100
+                c = g_total % 100
+                gold_str = f"{g}g {s}s {c}c" if g else f"{s}s {c}c" if s else f"{c}c"
+            except (TypeError, ValueError):
+                gold_str = str(gold_raw)
+            loc_gold = f"{loc_gold} | Gold: {gold_str}" if loc_gold else f"Gold: {gold_str}"
+        if loc_gold:
+            lines.append(loc_gold)
+
+    if "gear" in sections:
+        gear = context_dict.get("gear", {})
+        if gear:
+            lines.append("\nGear:")
+            for slot, item in gear.items():
+                name = item.get("name", "?")
+                item_id = item.get("itemId", "?")
+                lines.append(f"  {slot}: {name} (ID:{item_id})")
+
+    if "professions" in sections:
+        profs = context_dict.get("professions", [])
+        if profs:
+            lines.append("\nProfessions:")
+            for p in profs:
+                name = p.get("name", "?")
+                rank = p.get("rank", 0)
+                max_rank = p.get("maxRank", 0)
+                lines.append(f"  {name}: {rank}/{max_rank}")
+
+    if "quests" in sections:
+        quests = context_dict.get("quests", [])
+        if quests:
+            lines.append(f"\nActive Quests ({len(quests)}):")
+            for q in quests[:15]:
+                title = q.get("title", "?")
+                qlevel = q.get("level", "?")
+                done = " [Done]" if q.get("isComplete") else ""
+                lines.append(f"  [{qlevel}] {title}{done}")
+
+    if "reputations" in sections:
+        reps = context_dict.get("reputations", [])
+        if reps:
+            lines.append("\nReputations:")
+            for r in reps:
+                faction = r.get("faction", "?")
+                standing = r.get("standing", "?")
+                lines.append(f"  {faction}: {standing}")
+
+    return "\n".join(lines)
+
+def get_cache_key(model, query, context, history_fingerprint=""):
+    raw = f"{model}{query}{context}{history_fingerprint}"
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 def load_cache():
@@ -432,10 +550,70 @@ def get_configured_providers():
             configured[key] = info
     return configured
 
+def get_keyed_providers():
+    """Like get_configured_providers() but excludes keyless providers (e.g. Ollama)."""
+    return {k: v for k, v in get_configured_providers().items() if v["key_env"] is not None}
+
 def persist_env_value(key, value):
     env_path = get_env_path()
     set_key(env_path, key, value, quote_mode="never")
     os.environ[key] = value
+
+def validate_or_prompt_paths(interactive):
+    """Validate WOW_SAVED_VARIABLES_PATH and WOW_ADDON_PATH.
+    MCP mode (interactive=False): hard exit on missing config.
+    CLI mode (interactive=True): prompt user to enter paths interactively."""
+    global PATH, ADDON_PATH, SIGNAL_PATH
+    paths_ok = True
+
+    if not PATH or PATH == "." or "YOUR_ACCOUNT_NAME" in PATH:
+        if not interactive:
+            print("Configuration Error: Please update WOW_SAVED_VARIABLES_PATH in your .env file")
+            sys.exit(1)
+        tmp = Console()
+        tmp.print("\n[bold yellow]WOW_SAVED_VARIABLES_PATH is not configured.[/bold yellow]")
+        tmp.print(
+            "This should point to your AzerothLM SavedVariables file, e.g.:\n"
+            "  [dim]C:\\Program Files (x86)\\World of Warcraft\\_anniversary_\\WTF\\"
+            "Account\\YOURNAME\\SavedVariables\\AzerothLM.lua[/dim]\n"
+        )
+        try:
+            val = tmp.input("[bold]Enter WOW_SAVED_VARIABLES_PATH:[/bold] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSetup cancelled.")
+            sys.exit(1)
+        if val:
+            persist_env_value("WOW_SAVED_VARIABLES_PATH", val)
+            PATH = os.path.normpath(val)
+        else:
+            paths_ok = False
+
+    if not ADDON_PATH or ADDON_PATH == ".":
+        if not interactive:
+            print("Configuration Error: Please set WOW_ADDON_PATH in your .env file")
+            sys.exit(1)
+        tmp = Console()
+        tmp.print("\n[bold yellow]WOW_ADDON_PATH is not configured.[/bold yellow]")
+        tmp.print(
+            "This should point to your AzerothLM addon directory, e.g.:\n"
+            "  [dim]C:\\Program Files (x86)\\World of Warcraft\\_anniversary_\\"
+            "Interface\\AddOns\\AzerothLM[/dim]\n"
+        )
+        try:
+            val = tmp.input("[bold]Enter WOW_ADDON_PATH:[/bold] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSetup cancelled.")
+            sys.exit(1)
+        if val:
+            persist_env_value("WOW_ADDON_PATH", val)
+            ADDON_PATH = os.path.normpath(val)
+            SIGNAL_PATH = os.path.join(ADDON_PATH, "AzerothLM_Signal.lua")
+        else:
+            paths_ok = False
+
+    if not paths_ok:
+        print("Configuration Error: Required paths not set. Please configure .env and restart.")
+        sys.exit(1)
 
 # -----------------------------------------------------------------------------
 # Journal State Persistence
@@ -736,7 +914,7 @@ def _execute_completion(messages):
         usage_stats["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
     return response.choices[0].message.content or ""
 
-def testing_call_ai(user_query, game_context, topic_title):
+def testing_call_ai(user_query, context_dict, topic_title):
     responses = [
         "[TEST MODE] Analyzing your gear... You should prioritize upgrading your weapon in Karazhan.",
         "[TEST MODE] Based on your professions, you should focus on transmuting Primal Might.",
@@ -747,14 +925,21 @@ def testing_call_ai(user_query, game_context, topic_title):
     time.sleep(0.5)
     return random.choice(responses)
 
-def call_ai(user_query, game_context, topic_title, history=None, console=None):
+def call_ai(user_query, context_dict, topic_title, history=None, console=None):
     global LAST_CALL_TIME
 
     if TESTING_MODE:
         mcp_log("call_ai: TESTING_MODE — returning mock response")
         if console:
             debug_print(console, "Testing mode — returning mock response")
-        return testing_call_ai(user_query, game_context, topic_title)
+        return testing_call_ai(user_query, context_dict, topic_title)
+
+    # Classify question and format context for relevant sections only
+    sections = classify_question(user_query)
+    mcp_log(f"call_ai: sections={sorted(sections)}")
+    context_text = format_context(context_dict, sections)
+    if console:
+        debug_print(console, f"Sections: {sorted(sections)}, context: {len(context_text)} chars")
 
     # Rate Limiting
     elapsed = time.time() - LAST_CALL_TIME
@@ -765,8 +950,18 @@ def call_ai(user_query, game_context, topic_title, history=None, console=None):
             debug_print(console, f"Rate limit: waiting {wait_time:.1f}s")
         time.sleep(wait_time)
 
-    # Caching
-    cache_key = get_cache_key(MODEL_NAME, user_query, game_context)
+    # History windowing — cap at last 10 entries, cache key uses original length
+    full_history = history or []
+    if len(full_history) > 10:
+        mcp_log(f"call_ai: windowing history {len(full_history)} → 10 entries")
+        windowed_history = full_history[-10:]
+    else:
+        windowed_history = full_history
+
+    # Cache key includes history fingerprint so new entries cause a miss
+    last_ts = full_history[-1].get("timestamp", 0) if full_history else 0
+    history_fingerprint = f"{len(full_history)}:{last_ts}"
+    cache_key = get_cache_key(MODEL_NAME, user_query, context_text, history_fingerprint)
     cache = load_cache()
     if cache_key in cache:
         usage_stats["cached_hits"] += 1
@@ -782,15 +977,14 @@ def call_ai(user_query, game_context, topic_title, history=None, console=None):
     # Build multi-turn messages
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
 
-    if history:
-        for entry in history:
-            messages.append({"role": "user", "content": entry["question"]})
-            messages.append({"role": "assistant", "content": entry["answer"]})
+    for entry in windowed_history:
+        messages.append({"role": "user", "content": entry["question"]})
+        messages.append({"role": "assistant", "content": entry.get("full_answer") or entry["answer"]})
 
     user_content = (
         f"Research topic: '{topic_title}'. "
         f"Prioritize information relevant to this topic while considering overall character data.\n\n"
-        f"Character Context: {game_context}\n\n"
+        f"Character Context:\n{context_text}\n\n"
         f"Question: {user_query}"
     )
     messages.append({"role": "user", "content": user_content})
@@ -934,12 +1128,11 @@ def ask_question(topic_slug: str, question: str) -> str:
 
     # Read fresh character context
     context = read_game_context()
-    context_str = json.dumps(context, ensure_ascii=False)
 
     # Call AI with conversation history
     history = topic.get("entries", [])
-    mcp_log(f"[TOOL] ask_question | context={len(context_str)} chars | history={len(history)} entries")
-    ai_response = call_ai(question, context_str, topic["title"], history)
+    mcp_log(f"[TOOL] ask_question | context={list(context.keys())} | history={len(history)} entries")
+    ai_response = call_ai(question, context, topic["title"], history)
 
     # Truncate for in-game display
     display_response = truncate_response(ai_response)
@@ -1273,6 +1466,133 @@ def handle_test(console, rest):
         console.print("[dim]Usage: /test on | /test off[/dim]")
 
 # -----------------------------------------------------------------------------
+# Help Registry
+# -----------------------------------------------------------------------------
+COMMAND_HELP = {
+    "new": {
+        "usage": "/new <title>",
+        "brief": "Create a new research topic",
+        "category": "Topics",
+        "detail": (
+            "Creates a new topic to organize AI research around a theme.\n\n"
+            "• [cyan]title[/cyan] — any descriptive phrase (e.g. 'Karazhan Gear' or 'Herbalism Route')\n"
+            "• The title is converted to a slug: lowercase, spaces → hyphens\n"
+            "  Example: 'Karazhan Gear' → slug [cyan]karazhan-gear[/cyan]\n"
+            "• Use the slug with [cyan]/ask[/cyan], [cyan]/view[/cyan], and [cyan]/delete[/cyan]\n\n"
+            "Example: [cyan]/new Karazhan Gear Upgrades[/cyan]"
+        ),
+    },
+    "ask": {
+        "usage": "/ask <slug> <question>",
+        "brief": "Ask a question on a topic (AI + character context)",
+        "category": "Topics",
+        "detail": (
+            "Asks the AI a question tied to the given topic slug.\n\n"
+            "• [cyan]slug[/cyan] — the short ID for a topic (shown by [cyan]/topics[/cyan])\n"
+            "• Conversation history is included for multi-turn context (last 10 entries)\n"
+            "• Character context is filtered to relevant sections based on your question:\n"
+            "  - Gear keywords (weapon, helm, slot, bis, ...) → gear data included\n"
+            "  - Profession keywords (alchemy, crafting, recipe, ...) → profession data\n"
+            "  - Quest keywords (questline, chain, objective, ...) → quest data\n"
+            "  - Reputation keywords (faction, exalted, rep grind, ...) → rep data\n"
+            "  - Player info (level, class, talents, zone) is always included\n"
+            "  - If no keywords match, all data is sent as a fallback\n\n"
+            "Example: [cyan]/ask karazhan-gear What trinkets should I prioritize?[/cyan]"
+        ),
+    },
+    "topics": {
+        "usage": "/topics",
+        "brief": "List all research topics",
+        "category": "Topics",
+        "detail": None,
+    },
+    "view": {
+        "usage": "/view <slug>",
+        "brief": "View full Q&A history for a topic",
+        "category": "Topics",
+        "detail": None,
+    },
+    "delete": {
+        "usage": "/delete <slug>",
+        "brief": "Delete a topic and all its entries",
+        "category": "Topics",
+        "detail": None,
+    },
+    "model": {
+        "usage": "/model [list|add|switch]",
+        "brief": "Manage AI providers and models",
+        "category": "Model & Config",
+        "detail": (
+            "[bold]Subcommands:[/bold]\n\n"
+            "  [cyan]/model[/cyan] or [cyan]/model list[/cyan]\n"
+            "    Show all providers with configuration status and active model.\n\n"
+            "  [cyan]/model add[/cyan]\n"
+            "    Interactively add an API key for a new provider. Opens a numbered\n"
+            "    menu of unconfigured providers. Paste your key — saved to [cyan].env[/cyan]\n"
+            "    and takes effect immediately (no restart needed).\n\n"
+            "  [cyan]/model switch[/cyan]\n"
+            "    Two-step menu: choose a provider, then choose a model within it.\n"
+            "    Only shows providers with a key configured.\n"
+            "    Selection is saved to [cyan].env[/cyan] and persists across sessions.\n\n"
+            "[bold]Supported providers:[/bold] Google Gemini, OpenAI, Anthropic, Ollama (local/keyless)\n\n"
+            "[bold]Notes:[/bold]\n"
+            "  • Ollama requires a locally running server — no API key needed\n"
+            "  • MODEL_NAME in .env uses provider/model format, e.g. [dim]gemini/gemini-2.5-flash[/dim]"
+        ),
+    },
+    "test": {
+        "usage": "/test [on|off]",
+        "brief": "Toggle testing mode (mock AI responses)",
+        "category": "Model & Config",
+        "detail": (
+            "Testing mode replaces live AI calls with fast mock responses.\n\n"
+            "  [cyan]/test on[/cyan]  — enable testing mode, run config verification check\n"
+            "  [cyan]/test off[/cyan] — disable testing mode, use live model\n"
+            "  [cyan]/test[/cyan]     — show current status\n\n"
+            "When active, responses are prefixed [bold yellow][TEST MODE][/bold yellow] "
+            "and no API tokens are consumed.\n"
+            "Testing mode is persisted to [cyan].env[/cyan] as TESTING_MODE=true.\n\n"
+            "Running [cyan]/test on[/cyan] also triggers a configuration check that\n"
+            "validates your .env, API keys, file paths, and addon directory."
+        ),
+    },
+    "context": {
+        "usage": "/context",
+        "brief": "Show character context (gear, professions, quests, reputations)",
+        "category": "Info",
+        "detail": (
+            "Displays current character data read from WoW SavedVariables.\n\n"
+            "Data includes: level, class, race, talent spec, gear slots, professions,\n"
+            "active quests, and faction reputations.\n\n"
+            "If no data appears:\n"
+            "  1. Log in to your character in-game\n"
+            "  2. Run [cyan]/alm scan[/cyan] in-game to capture current data\n"
+            "  3. Type [cyan]/reload[/cyan] or log out to save the SavedVariables file\n\n"
+            "The relay reads this file on every [cyan]/ask[/cyan] call.\n"
+            "Run [cyan]/alm scan[/cyan] in-game when your character changes significantly."
+        ),
+    },
+    "usage": {
+        "usage": "/usage",
+        "brief": "Show API usage stats for this session",
+        "category": "Info",
+        "detail": None,
+    },
+    "status": {
+        "usage": "/status",
+        "brief": "Show relay configuration and file paths",
+        "category": "Info",
+        "detail": None,
+    },
+    "quit": {
+        "usage": "/quit",
+        "brief": "Exit the relay (also: /exit, /q)",
+        "category": "Info",
+        "detail": None,
+    },
+}
+
+# -----------------------------------------------------------------------------
 # Interactive CLI
 # -----------------------------------------------------------------------------
 def run_cli():
@@ -1293,13 +1613,17 @@ def run_cli():
 
     # Config info
     configured = get_configured_providers()
+    keyed_providers = get_keyed_providers()
+    active_provider = MODEL_NAME.split("/")[0] if "/" in MODEL_NAME else ""
     config_table = Table(show_header=False, box=None, padding=(0, 2))
     config_table.add_column(style="bold cyan", width=18)
     config_table.add_column()
     config_table.add_row("Model", f"[bold]{MODEL_NAME}[/bold]")
-    if configured:
-        provider_names = ", ".join(info["display"] for info in configured.values())
+    if keyed_providers:
+        provider_names = ", ".join(info["display"] for info in keyed_providers.values())
         config_table.add_row("Providers", f"[green]{provider_names}[/green]")
+    elif "ollama" in configured:
+        config_table.add_row("Providers", "[dim]Ollama (local, keyless)[/dim]")
     else:
         config_table.add_row("Providers", "[red]None configured![/red]")
     config_table.add_row("SavedVariables", f"[dim]{PATH}[/dim]")
@@ -1309,23 +1633,24 @@ def run_cli():
     console.print(config_table)
     console.print()
 
-    if not configured:
+    active_needs_key = PROVIDERS.get(active_provider, {}).get("key_env") is not None
+    if not keyed_providers and active_needs_key:
         console.print(Panel(
             "[bold yellow]No API providers configured.[/bold yellow]\n\n"
             "To get started, either:\n"
             "  1. Run [cyan]/model add[/cyan] to set up a provider interactively\n"
             "  2. Edit your [cyan].env[/cyan] file directly and add an API key\n\n"
-            "Supported providers: " + ", ".join(p["display"] for p in PROVIDERS.values()),
+            "Supported providers: " + ", ".join(
+                p["display"] for p in PROVIDERS.values() if p["key_env"]
+            ),
             title="Setup Required",
             border_style="yellow",
         ))
-    else:
-        active_provider = MODEL_NAME.split("/")[0] if "/" in MODEL_NAME else ""
-        if active_provider and active_provider not in configured:
-            console.print(
-                f"[yellow]Warning: Active model '{MODEL_NAME}' uses provider '{active_provider}' "
-                f"which has no API key configured. Use /model switch to change.[/yellow]\n"
-            )
+    elif active_provider and active_provider not in keyed_providers and active_needs_key:
+        console.print(
+            f"[yellow]Warning: Active model '{MODEL_NAME}' uses provider '{active_provider}' "
+            f"which has no API key configured. Use /model switch to change.[/yellow]\n"
+        )
 
     console.print("[dim]Type /help for commands. Type /quit to exit.[/dim]\n")
 
@@ -1358,23 +1683,32 @@ def run_cli():
 
         # -- /help --------------------------------------------------------
         if cmd == "/help":
-            help_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
-            help_table.add_column("Command", style="cyan")
-            help_table.add_column("Description")
-            help_table.add_row("/new <title>", "Create a new research topic (title becomes the slug)")
-            help_table.add_row("/ask <slug> <question>", "Ask a question on a topic")
-            help_table.add_row("/topics", "List all topics")
-            help_table.add_row("/view <slug>", "View full Q&A history for a topic")
-            help_table.add_row("/delete <slug>", "Delete a topic")
-            help_table.add_row("/model", "Show providers and models")
-            help_table.add_row("/model add", "Add a new provider API key")
-            help_table.add_row("/model switch", "Switch to a different model")
-            help_table.add_row("/test [on|off]", "Toggle test mode, or show current status")
-            help_table.add_row("/context", "Show character context (gear, professions, quests)")
-            help_table.add_row("/usage", "Show API usage stats for this session")
-            help_table.add_row("/status", "Show relay configuration")
-            help_table.add_row("/quit", "Exit the relay (also: /exit, /q)")
-            console.print(help_table)
+            if not rest.strip():
+                # Overview table grouped by category
+                help_table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+                help_table.add_column("Command", style="cyan")
+                help_table.add_column("Description")
+                for cat in ("Topics", "Model & Config", "Info"):
+                    help_table.add_row(f"[bold dim]{cat}[/bold dim]", "")
+                    for name, info in COMMAND_HELP.items():
+                        if info["category"] == cat:
+                            help_table.add_row(f"  {info['usage']}", info["brief"])
+                console.print(help_table)
+                console.print("\n[dim]Type /help <command> for details. Example: /help model[/dim]")
+            else:
+                subcmd = rest.strip().lower().split()[0].lstrip("/")
+                info = COMMAND_HELP.get(subcmd)
+                if info and info.get("detail"):
+                    console.print(Panel(
+                        info["detail"],
+                        title=f"[bold cyan]{info['usage']}[/bold cyan]",
+                        subtitle=info["brief"],
+                        border_style="cyan",
+                    ))
+                elif info:
+                    console.print(f"[cyan]{info['usage']}[/cyan] — {info['brief']}")
+                else:
+                    console.print(f"[yellow]No help entry for '{subcmd}'. Type /help for a list of commands.[/yellow]")
 
         # -- /quit --------------------------------------------------------
         elif cmd in ("/quit", "/exit", "/q"):
@@ -1435,12 +1769,11 @@ def run_cli():
             ):
                 debug_print(console, f"Reading context from {PATH}")
                 context = read_game_context()
-                context_str = json.dumps(context, ensure_ascii=False)
-                debug_print(console, f"Context: {len(context_str)} chars")
+                debug_print(console, f"Context keys: {list(context.keys())}")
 
                 history = topic.get("entries", [])
                 debug_print(console, f"History: {len(history)} entries")
-                ai_response = call_ai(question, context_str, topic["title"], history, console=console)
+                ai_response = call_ai(question, context, topic["title"], history, console=console)
                 display_response = truncate_response(ai_response)
 
             now = int(time.time())
@@ -1600,6 +1933,9 @@ if __name__ == "__main__":
     parser.add_argument("--mcp", action="store_true", help="Run as MCP server (for Claude Code)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose diagnostic output to stderr")
     args = parser.parse_args()
+
+    # Validate required paths — interactive prompts in CLI mode, hard exit in MCP mode
+    validate_or_prompt_paths(interactive=not args.mcp)
 
     debug_active = args.debug or os.getenv("DEBUG", "").lower() == "true"
 
