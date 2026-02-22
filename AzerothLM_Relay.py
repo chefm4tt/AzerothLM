@@ -41,6 +41,7 @@ JOURNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "j
 COOLDOWN_TIMER = 10
 LAST_CALL_TIME = 0
 DEBUG_MODE = False
+_debug_enabled = False  # Set True at startup when --debug or DEBUG=true
 MAX_RESPONSE_CHARS = 2000
 usage_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_hits": 0}
 
@@ -321,7 +322,8 @@ def debug_print(console, msg):
 
 def mcp_log(msg):
     """Log diagnostic message via stdlib logger. No-op if --debug not passed."""
-    logger.debug(msg)
+    if _debug_enabled:
+        logger.debug(msg)
 
 def interpolate_color(start_rgb, end_rgb, t):
     """Linearly interpolate between two (r, g, b) tuples. t in [0.0, 1.0]."""
@@ -1602,6 +1604,7 @@ if __name__ == "__main__":
     debug_active = args.debug or os.getenv("DEBUG", "").lower() == "true"
 
     if debug_active:
+        _debug_enabled = True
         _dbg_handler = logging.StreamHandler(sys.stderr)
         _dbg_handler.setFormatter(logging.Formatter("%(asctime)s [DBG] %(message)s", datefmt="%H:%M:%S"))
         logger.setLevel(logging.DEBUG)
