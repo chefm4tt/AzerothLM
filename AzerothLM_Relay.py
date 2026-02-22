@@ -853,15 +853,19 @@ def write_signal_file(state, ack_timestamp=None, console=None):
         mcp_log(f"signal: write FAILED — {e}")
         raise
 
-def sync_pending_and_write_signal(console=None):
+def sync_pending_and_write_signal(console=None, force_write=False):
     """Process any pending in-game actions, then rewrite the signal file with ack.
+    Only writes signal file if pending actions were found or force_write is True.
     Returns (max_ts, state) so callers can reuse the loaded state."""
     mcp_log("sync: start")
     max_ts, state = process_pending_actions()
     mcp_log(f"sync: pending done, max_ts={max_ts}")
     if console and max_ts > 0:
         debug_print(console, f"Processed pending actions up to ts={max_ts}")
-    write_signal_file(state, ack_timestamp=max_ts if max_ts > 0 else None, console=console)
+    if max_ts > 0 or force_write:
+        write_signal_file(state, ack_timestamp=max_ts if max_ts > 0 else None, console=console)
+    else:
+        mcp_log("sync: skipped signal write (no pending actions)")
     mcp_log("sync: complete")
     return max_ts, state
 
