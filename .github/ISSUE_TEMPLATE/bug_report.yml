@@ -1,0 +1,64 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in AzerothLM.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of AzerothLM is affected?
+      options:
+        - Addon (in-game)
+        - Relay (Python)
+        - Both / Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Start the relay with `python AzerothLM_Relay.py`
+        2. Type a question in-game
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Addon Version
+      description: Found in the addon list in-game or the TOC file.
+      placeholder: "e.g. 0.1-beta.1"
+    validations:
+      required: true
+  - type: input
+    id: wow_version
+    attributes:
+      label: WoW Client Version
+      description: Which WoW client are you using?
+      placeholder: "e.g. TBC Classic Anniversary 2.5.4"
+    validations:
+      required: false
+  - type: input
+    id: llm_model
+    attributes:
+      label: LLM Model Used
+      description: Which model is configured in your .env (MODEL_NAME)?
+      placeholder: "e.g. gemini/gemini-2.0-flash"
+    validations:
+      required: false
