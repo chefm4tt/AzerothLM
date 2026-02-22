@@ -50,7 +50,7 @@ WoW addons run in a sandboxed Lua environment with no internet access. AzerothLM
 
 - **Game**: World of Warcraft TBC Classic / Anniversary Edition (Interface version 20505)
 - **Runtime**: Python 3.x
-- **Python Libraries**: `litellm`, `python-dotenv`, `filelock`, `rich`, `mcp`, `pyfiglet`
+- **Python Libraries**: `litellm`, `python-dotenv`, `rich`, `mcp`, `pyfiglet`
 - **API Key**: Google Gemini (recommended — free tier available), OpenAI, Anthropic, or a local Ollama instance
 
 ---

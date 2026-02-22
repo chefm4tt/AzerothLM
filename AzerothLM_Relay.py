@@ -298,8 +298,7 @@ def save_cache(key, response):
         excess = len(cache) - _CACHE_MAX_ENTRIES
         for old_key in list(cache.keys())[:excess]:
             del cache[old_key]
-    with open(CACHE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(cache, f, indent=2)
+    atomic_write(CACHE_FILE, json.dumps(cache, indent=2))
 
 def truncate_response(text):
     if len(text) <= MAX_RESPONSE_CHARS:
@@ -449,8 +448,7 @@ def load_journal_state():
     return {"topics": {}}
 
 def save_journal_state(state):
-    with open(JOURNAL_STATE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
+    atomic_write(JOURNAL_STATE_FILE, json.dumps(state, indent=2, ensure_ascii=False))
 
 # -----------------------------------------------------------------------------
 # File Access
@@ -468,6 +466,15 @@ def wait_for_file_ready(path):
             retries += 1
             time.sleep(0.5)
     return False
+
+def atomic_write(path, content, encoding='utf-8'):
+    """Write to a temp file then atomically rename to target path."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, 'w', encoding=encoding) as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
 
 # -----------------------------------------------------------------------------
 # Context Reading
@@ -841,10 +848,8 @@ def write_signal_file(state, ack_timestamp=None, console=None):
         }
 
     if not signal_data:
-        wait_for_file_ready(SIGNAL_PATH)
         try:
-            with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
-                f.write('AzerothLM_Signal = {}\n')
+            atomic_write(SIGNAL_PATH, 'AzerothLM_Signal = {}\n')
             mcp_log("signal: write OK (empty)")
         except Exception as e:
             mcp_log(f"signal: write FAILED — {e}")
@@ -856,10 +861,8 @@ def write_signal_file(state, ack_timestamp=None, console=None):
         mcp_log(f"signal: serialization FAILED — {e}")
         raise RuntimeError(f"Lua serialization failed: {e}")
 
-    wait_for_file_ready(SIGNAL_PATH)
     try:
-        with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
-            f.write(f'AzerothLM_Signal = {lua_table}\n')
+        atomic_write(SIGNAL_PATH, f'AzerothLM_Signal = {lua_table}\n')
         mcp_log("signal: write OK")
     except Exception as e:
         mcp_log(f"signal: write FAILED — {e}")
@@ -1047,8 +1050,7 @@ def delete_topic(topic_slug: str) -> str:
         if state["topics"]:
             write_signal_file(state)
         elif os.path.exists(SIGNAL_PATH):
-            with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
-                f.write('AzerothLM_Signal = nil\n')
+            atomic_write(SIGNAL_PATH, 'AzerothLM_Signal = nil\n')
     except Exception:
         pass
 
@@ -1516,8 +1518,7 @@ def run_cli():
                 if state["topics"]:
                     write_signal_file(state, console=console)
                 elif os.path.exists(SIGNAL_PATH):
-                    with open(SIGNAL_PATH, 'w', encoding='utf-8') as f:
-                        f.write('AzerothLM_Signal = {}\n')
+                    atomic_write(SIGNAL_PATH, 'AzerothLM_Signal = {}\n')
             except Exception:
                 pass
             debug_print(console, f"Deleted topic slug='{slug}'")
