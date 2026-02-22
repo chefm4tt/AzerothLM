@@ -44,6 +44,9 @@ DEBUG_MODE = False
 MAX_RESPONSE_CHARS = 2000
 usage_stats = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_hits": 0}
 
+_sv_cache = None  # Cached result of read_saved_variables_db()
+_sv_mtime = 0     # os.path.getmtime(PATH) when _sv_cache was populated
+
 PLACEHOLDER_PATTERN = re.compile(r"^YOUR_.*_HERE$|^$")
 PROVIDERS = {
     "gemini": {
@@ -483,11 +486,24 @@ def parse_item_link(raw_link):
     }
 
 def read_saved_variables_db():
-    """Read and parse the full AzerothLM_DB from SavedVariables."""
+    """Read and parse the full AzerothLM_DB from SavedVariables.
+    Result is cached by file mtime — only re-parsed when WoW writes a new version."""
+    global _sv_cache, _sv_mtime
     mcp_log(f"read_sv: reading {PATH}")
     if not os.path.exists(PATH):
         mcp_log("read_sv: file not found")
+        _sv_cache = None
+        _sv_mtime = 0
         return None
+
+    try:
+        current_mtime = os.path.getmtime(PATH)
+    except OSError:
+        current_mtime = 0
+
+    if _sv_cache is not None and current_mtime == _sv_mtime:
+        mcp_log(f"read_sv: cache hit (mtime={current_mtime})")
+        return _sv_cache
 
     wait_for_file_ready(PATH)
     try:
@@ -504,6 +520,8 @@ def read_saved_variables_db():
     try:
         parser = LuaParser(content)
         result = parser.parse()
+        _sv_cache = result
+        _sv_mtime = current_mtime
         mcp_log(f"read_sv: parsed OK ({len(content)} chars)")
         return result
     except Exception as e:
