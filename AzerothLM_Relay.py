@@ -197,7 +197,7 @@ class LuaParser:
             self.idx += 1
         num_str = self.data[start:self.idx]
         try: return int(num_str)
-        except: return float(num_str)
+        except ValueError: return float(num_str)
 
 def to_lua(obj, indent=0):
     spaces = "\t" * indent

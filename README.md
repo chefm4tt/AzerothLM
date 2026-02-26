@@ -49,7 +49,7 @@ WoW addons run in a sandboxed Lua environment with no internet access. AzerothLM
 ## 📋 Requirements
 
 - **Game**: World of Warcraft TBC Classic / Anniversary Edition (Interface version 20505)
-- **Runtime**: Python 3.x
+- **Runtime**: Python 3.10+
 - **Python Libraries**: `litellm`, `python-dotenv`, `rich`, `mcp`, `pyfiglet`
 - **API Key**: Google Gemini (recommended — free tier available), OpenAI, Anthropic, or a local Ollama instance
 
@@ -215,7 +215,21 @@ When active, all AI responses are replaced with mock data prefixed `[TEST MODE]`
 
 ## 📋 Changelog
 
-### v0.1-alpha.2 *(in testing)*
+### v0.1-beta.1 *(in testing)*
+
+- 🆕 MIT License added — AzerothLM is now open source
+- ✨ Stale model IDs updated in `.env.example` (Anthropic, OpenAI, Gemini)
+- ✨ Requirements pinned to minimum versions for reproducible installs
+- 🐛 Fixed user-facing "MCP tools" jargon — messages now say "relay CLI"
+
+### v0.1-alpha.3
+
+- 🆕 Context-aware prompts — questions route to relevant character data sections only
+- 🆕 First-run interactive path setup — relay guides new users through `.env` configuration
+- 🆕 Help system rework — `/help` shows category table, `/help <cmd>` shows detail panel
+- 🐛 Fixed response cache stale hits — history fingerprint included in cache key
+
+### v0.1-alpha.2
 
 - 🆕 In-game journal management commands: `/alm reset`, `/alm wipe`, `/alm help`
 - 🆕 Item quality colorization in the journal viewer — gear names display in their rarity color

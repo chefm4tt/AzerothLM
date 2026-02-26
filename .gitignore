@@ -25,6 +25,10 @@ venv/
 # Project
 *.lock
 *.tmp
+*.lua.bak
+*.toc.bak
+.env.backup
+debug.log
 
 # wow addon specific
 AzerothLM_Signal.lua
