@@ -394,7 +394,7 @@ SlashCmdList["AZEROTHLM"] = function(msg)
 				print(string.format("|cFF00FF00AzerothLM|r: [%s] %s (%d entries)", slug, topic.title, entryCount))
 			end
 			if count == 0 then
-				print("|cFF00FF00AzerothLM|r: No topics yet. Use MCP tools to create one.")
+				print("|cFF00FF00AzerothLM|r: No topics yet. Use the relay CLI to create one.")
 			end
 		end
 

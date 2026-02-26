@@ -185,7 +185,7 @@ function AzerothLM_UpdateJournalDisplay()
 
 	-- Render entries
 	if not topic.entries or #topic.entries == 0 then
-		f.history:AddMessage("|cFF888888No entries yet. Use MCP tools to ask a question on this topic.|r")
+		f.history:AddMessage("|cFF888888No entries yet. Use the relay CLI to ask a question.|r")
 		return
 	end
 
