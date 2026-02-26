@@ -10,34 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Detect pre-release
-        id: prerelease
-        run: |
-          if echo "${{ steps.version.outputs.version }}" | grep -qE '(alpha|beta)'; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build package
-        run: |
-          mkdir -p staging/AzerothLM
-          cp AzerothLM.toc AzerothLM.lua AzerothLM_UI.lua staging/AzerothLM/
-          cp AzerothLM_Relay.py requirements.txt README.md .env.example staging/AzerothLM/
-          echo 'AzerothLM_Signal = {}' > staging/AzerothLM/AzerothLM_Signal.lua
-          sed -i "s/@project-version@/${{ steps.version.outputs.version }}/" staging/AzerothLM/AzerothLM.toc
-          cd staging && zip -r "../AzerothLM-${{ steps.version.outputs.version }}.zip" AzerothLM/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
         with:
-          files: "AzerothLM-${{ steps.version.outputs.version }}.zip"
-          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
-          generate_release_notes: true
+          fetch-depth: 0
+
+      - name: Write clean signal file
+        run: echo 'AzerothLM_Signal = {}' > AzerothLM_Signal.lua
+
+      - uses: BigWigsMods/packager@v2
