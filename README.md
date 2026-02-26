@@ -125,6 +125,8 @@ python AzerothLM_Relay.py
 | `/help` | Show all commands |
 | `/quit` | Exit the relay |
 
+<img src="screenshots/cli-mode.png" width="580" alt="AzerothLM CLI showing help output and command reference">
+
 ---
 
 ## 🔌 MCP Server Mode
@@ -198,6 +200,10 @@ After using the CLI to ask questions, type `/reload` to sync responses into the 
 | `/alm wipe` | Wipe all journal data and queue deletions on the relay side |
 | `/alm help` | Show all in-game commands |
 
+<img src="screenshots/journal-viewer.png" width="680" alt="AzerothLM in-game journal showing a character-aware gear upgrade response">
+
+<img src="screenshots/ingame-commands.png" width="500" alt="AzerothLM in-game command reference printed to chat via /alm help">
+
 ---
 
 ## 🧪 Test Mode
@@ -250,3 +256,9 @@ When active, all AI responses are replaced with mock data prefixed `[TEST MODE]`
 - 🆕 In-game journal viewer: draggable frame, topic tabs, right-click menus, mouse wheel scroll
 - 🆕 Response caching and built-in rate limiting with exponential backoff
 - 🆕 Air-gap bridge architecture: file-based relay between WoW sandbox and external AI
+
+---
+
+## 💬 Feedback
+
+AzerothLM is in **public beta** — core features are stable but rough edges exist. If you hit a bug, have a suggestion, or want to share how you're using it, [open an issue on GitHub](https://github.com/chefm4tt/AzerothLM/issues).
